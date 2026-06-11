@@ -464,6 +464,18 @@ export default function GameBoard({
         : `${String(Math.floor(remainingMs / 60000)).padStart(2, "0")}:${String(
             Math.floor((remainingMs % 60000) / 1000)
           ).padStart(2, "0")}`;
+  const phaseTotalMs =
+    phase.ends_at && phase.starts_at
+      ? new Date(phase.ends_at).getTime() - new Date(phase.starts_at).getTime()
+      : null;
+  const timeFraction =
+    remainingMs !== null && phaseTotalMs ? remainingMs / phaseTotalMs : 1;
+  const timerColor =
+    timeFraction < 0.2
+      ? "text-red-400"
+      : timeFraction < 0.5
+        ? "text-green-400"
+        : "text-amber-400";
 
   const mapOrders = isAdjustment || isRetreat ? [] : [...orders.values()];
   const resultOrders =
@@ -474,10 +486,10 @@ export default function GameBoard({
       {/* ----------------------------------------------- end of game */}
       {isFinished && (
         <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-stone-950/80 p-6 backdrop-blur-sm"
+          className="fixed inset-0 z-40 flex items-center justify-center bg-[#0f1117]/85 p-6 backdrop-blur-sm"
           data-testid="victory-screen"
         >
-          <div className="w-full max-w-md rounded-2xl border border-amber-600/60 bg-stone-900 p-8 text-center shadow-2xl">
+          <div className="glass w-full max-w-md rounded-2xl border-amber-600/60 p-8 text-center">
             {room.winner_nation ? (
               <>
                 <p className="text-5xl">🏆</p>
@@ -497,7 +509,11 @@ export default function GameBoard({
               {ranked.map((p, i) => (
                 <li
                   key={p.id}
-                  className="flex items-center gap-2 rounded-lg bg-stone-800/60 px-3 py-1.5 text-sm"
+                  className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm ${
+                    i === 0
+                      ? "border-amber-600/50 bg-amber-950/40"
+                      : "border-[var(--card-border)] bg-white/[0.04]"
+                  }`}
                 >
                   <span className="w-5 font-mono text-stone-500">{i + 1}.</span>
                   <span
@@ -526,17 +542,23 @@ export default function GameBoard({
 
       {/* ------------------------------------------------------- sidebar */}
       <aside className="space-y-4">
-        <div className="rounded-xl border border-stone-800 bg-stone-900/60 p-4">
+        <div className="glass p-4">
           <h1 className="truncate text-lg font-bold">{room.name}</h1>
           <p className="mt-1 text-2xl font-bold text-amber-500" data-testid="phase-season">
             {SEASON_LABEL[phase.season]} {phase.year}
           </p>
-          <p className="text-sm text-stone-400">
-            Phase {phase.phase_number}/{room.total_phases} · {PHASE_TYPE_LABEL[phase.type]}
+          <p className="mt-1.5 text-sm text-[var(--text-2)]">
+            Phase {phase.phase_number}/{room.total_phases}{" "}
+            <span
+              className="ml-1 inline-block rounded-lg border border-amber-600/40 bg-amber-950/40 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-amber-400"
+              data-testid="phase-type-badge"
+            >
+              {PHASE_TYPE_LABEL[phase.type]}
+            </span>
           </p>
           {/* server and client render different clock values — expected */}
           <p
-            className="mt-2 font-mono text-3xl font-bold"
+            className={`mt-2 font-mono text-3xl font-bold transition-colors ${timerColor}`}
             data-testid="phase-timer"
             suppressHydrationWarning
           >
@@ -544,7 +566,7 @@ export default function GameBoard({
           </p>
         </div>
 
-        <div className="rounded-xl border border-stone-800 bg-stone-900/60 p-4">
+        <div className="glass p-4">
           <h2 className="mb-2 font-semibold text-stone-300">Classement</h2>
           <ul className="space-y-1.5">
             {ranked.map((p) => {
@@ -589,7 +611,7 @@ export default function GameBoard({
 
         {/* ------------------------------------------- last phase results */}
         {lastResolved?.summary && !isFinished && (
-          <div className="rounded-xl border border-stone-800 bg-stone-900/60 p-4" data-testid="results-panel">
+          <div className="glass p-4" data-testid="results-panel">
             <button
               onClick={() => setShowResults((v) => !v)}
               className="flex w-full items-center justify-between font-semibold text-stone-300"
@@ -615,14 +637,14 @@ export default function GameBoard({
         {/* ---------------------------------------------- order panel */}
         {isFinished ? null : isSpectator ? (
           <div
-            className="rounded-xl border border-stone-700 bg-stone-900/60 p-4 text-sm text-stone-400"
+            className="glass p-4 text-sm text-[var(--text-2)]"
             data-testid="spectator-banner"
           >
             👁 Vous êtes spectateur{me.is_eliminated ? " (éliminé)" : ""}. Vous voyez tout,
             mais ne pouvez plus donner d&apos;ordres.
           </div>
         ) : isRetreat ? (
-          <div className="rounded-xl border border-stone-800 bg-stone-900/60 p-4" data-testid="retreat-panel">
+          <div className="glass p-4" data-testid="retreat-panel">
             <h2 className="mb-2 font-semibold">Retraites</h2>
             {myDislodged.length === 0 ? (
               <p className="text-sm text-stone-400">
@@ -696,7 +718,7 @@ export default function GameBoard({
             )}
           </div>
         ) : isAdjustment ? (
-          <div className="rounded-xl border border-stone-800 bg-stone-900/60 p-4" data-testid="adjustment-panel">
+          <div className="glass p-4" data-testid="adjustment-panel">
             <h2 className="mb-2 font-semibold">Ajustements d&apos;hiver</h2>
             {locked ? (
               <p className="text-sm font-semibold text-green-500">Ajustements validés ✓</p>
@@ -805,7 +827,7 @@ export default function GameBoard({
             )}
           </div>
         ) : (
-          <div className="rounded-xl border border-stone-800 bg-stone-900/60 p-4" data-testid="order-panel">
+          <div className="glass p-4" data-testid="order-panel">
             <h2 className="mb-2 font-semibold">Vos ordres</h2>
             {locked ? (
               <p className="mb-2 text-sm font-semibold text-green-500" data-testid="orders-locked">
@@ -912,7 +934,13 @@ export default function GameBoard({
                 onClick={handleSubmit}
                 disabled={isPending || myUnits.length === 0}
                 data-testid="submit-orders"
-                className="mt-3 w-full rounded-lg bg-amber-600 py-2.5 font-bold text-stone-950 transition hover:bg-amber-500 disabled:opacity-50"
+                className={`mt-3 w-full rounded-lg py-2.5 text-lg font-bold transition disabled:opacity-50 ${
+                  orders.size === 0
+                    ? "bg-white/15 text-[var(--text-2)] hover:bg-white/25"
+                    : orders.size >= myUnits.length
+                      ? "bg-green-600 text-stone-950 shadow-lg shadow-green-900/30 hover:bg-green-500"
+                      : "bg-amber-500 text-stone-950 shadow-lg shadow-amber-900/30 hover:bg-amber-400"
+                }`}
               >
                 Valider les ordres ({orders.size}/{myUnits.length})
               </button>

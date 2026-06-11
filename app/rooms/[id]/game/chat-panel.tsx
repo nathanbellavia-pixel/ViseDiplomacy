@@ -116,22 +116,22 @@ export default function ChatPanel({
       </button>
 
       {open && (
-        <div className="fixed bottom-20 right-5 z-40 flex h-[480px] w-[380px] flex-col overflow-hidden rounded-xl border border-stone-700 bg-stone-950 shadow-2xl">
-          <div className="border-b border-stone-800 px-4 py-2.5 font-semibold">
+        <div className="fixed bottom-20 right-5 z-40 flex h-[480px] w-[380px] flex-col overflow-hidden rounded-xl border border-[var(--card-border)] bg-[#12141c]/90 shadow-2xl backdrop-blur-md">
+          <div className="border-b border-[var(--card-border)] px-4 py-2.5 font-semibold">
             Messages privés
           </div>
           <div className="flex min-h-0 flex-1">
-            <div className="w-32 shrink-0 overflow-y-auto border-r border-stone-800">
+            <div className="w-32 shrink-0 overflow-y-auto border-r border-[var(--card-border)]">
               {contacts.length === 0 && (
-                <p className="p-3 text-xs text-stone-500">Aucun autre joueur humain.</p>
+                <p className="p-3 text-xs text-[var(--text-2)]">Aucun autre joueur humain.</p>
               )}
               {contacts.map((c) => (
                 <button
                   key={c.id}
                   onClick={() => setActiveContact(c.id)}
                   data-contact={c.display_name}
-                  className={`block w-full px-3 py-2.5 text-left text-sm transition hover:bg-stone-900 ${
-                    activeContact === c.id ? "bg-stone-900 font-semibold" : ""
+                  className={`block w-full px-3 py-2.5 text-left text-sm transition hover:bg-white/5 ${
+                    activeContact === c.id ? "bg-white/10 font-semibold" : ""
                   }`}
                 >
                   <span className="flex items-center gap-1.5">
@@ -160,7 +160,7 @@ export default function ChatPanel({
                         className={`max-w-[85%] rounded-lg px-3 py-1.5 text-sm ${
                           m.sender_player_id === me.id
                             ? "ml-auto bg-amber-900/60"
-                            : "bg-stone-800"
+                            : "bg-white/10"
                         }`}
                       >
                         {m.content}
@@ -173,14 +173,14 @@ export default function ChatPanel({
                     )}
                   </div>
                   {error && <p className="px-3 text-xs text-red-400">{error}</p>}
-                  <div className="flex gap-2 border-t border-stone-800 p-2.5">
+                  <div className="flex gap-2 border-t border-[var(--card-border)] p-2.5">
                     <input
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleSend()}
                       placeholder="Votre message…"
                       data-testid="chat-input"
-                      className="min-w-0 flex-1 rounded-lg border border-stone-700 bg-stone-900 px-3 py-1.5 text-sm outline-none focus:border-amber-500"
+                      className="min-w-0 flex-1 rounded-lg border border-[var(--card-border)] bg-[#0f1117]/80 px-3 py-1.5 text-sm outline-none transition focus:border-amber-500"
                     />
                     <button
                       onClick={handleSend}

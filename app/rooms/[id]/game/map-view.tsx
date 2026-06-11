@@ -156,7 +156,7 @@ export default function MapView({
   const unitsToDraw = territories.filter((t) => t.unit_type && t.occupant_nation);
 
   return (
-    <div className="relative w-full overflow-hidden rounded-xl border border-stone-800 bg-stone-900">
+    <div className="glass relative w-full overflow-hidden">
       {mapBase}
       {/* overlay: supply centers, units, orders */}
       <svg

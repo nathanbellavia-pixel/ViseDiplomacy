@@ -53,7 +53,7 @@ export default async function RoomPage({
     if (inserted) players = [...players, inserted as RoomPlayer];
   } else if (!isMember && room.status !== "waiting") {
     return (
-      <div className="mx-auto max-w-md rounded-xl border border-stone-800 bg-stone-900/50 p-8 text-center">
+      <div className="glass mx-auto max-w-md p-8 text-center">
         <h1 className="text-xl font-bold">Partie en cours</h1>
         <p className="mt-2 text-stone-400">
           Cette partie a déjà commencé sans vous. Retournez au salon pour en

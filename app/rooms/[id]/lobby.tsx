@@ -147,14 +147,14 @@ export default function Lobby({
             Joueurs ({players.length}/{room.max_players})
             <span className="ml-2 inline-block h-2 w-2 animate-pulse rounded-full bg-green-500 align-middle" />
           </h2>
-          <ul className="space-y-2">
+          <ul className="glass space-y-2 p-3">
             {players.map((player) => (
               <li
                 key={player.id}
-                className="flex items-center gap-3 rounded-lg border border-stone-800 bg-stone-900/50 px-4 py-3"
+                className="flex items-center gap-3 rounded-lg border border-[var(--card-border)] bg-white/[0.03] px-4 py-3"
               >
                 <span
-                  className="h-3 w-3 shrink-0 rounded-full border border-stone-600"
+                  className="h-3 w-3 shrink-0 rounded-full border border-white/20"
                   style={{
                     backgroundColor: player.nation
                       ? NATION_COLORS[player.nation]
@@ -164,20 +164,25 @@ export default function Lobby({
                 <span className="min-w-0 truncate font-medium">
                   {player.display_name}
                   {player.user_id === userId && (
-                    <span className="text-stone-500"> (vous)</span>
+                    <span className="text-[var(--text-2)]"> (vous)</span>
                   )}
                 </span>
                 {player.is_host && (
-                  <span className="rounded bg-amber-950 px-2 py-0.5 text-xs font-semibold text-amber-500">
+                  <span className="rounded-lg bg-amber-950 px-2 py-0.5 text-xs font-semibold text-amber-500">
                     Hôte
                   </span>
                 )}
-                {player.is_bot && (
-                  <span className="rounded bg-stone-800 px-2 py-0.5 text-xs font-semibold text-stone-400">
-                    Bot
+                {player.is_bot ? (
+                  <span className="rounded-lg bg-white/10 px-2 py-0.5 text-xs font-semibold text-[var(--text-2)]">
+                    🤖 Bot
                   </span>
+                ) : (
+                  <span
+                    className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-green-500"
+                    title="Connecté"
+                  />
                 )}
-                <span className="ml-auto shrink-0 text-sm text-stone-400">
+                <span className="ml-auto shrink-0 text-sm text-[var(--text-2)]">
                   {player.nation ?? "—"}
                 </span>
               </li>
@@ -198,12 +203,12 @@ export default function Lobby({
                   key={nation}
                   onClick={() => handleClaim(nation)}
                   disabled={!claimable || isPending}
-                  className={`flex items-center justify-between gap-2 rounded-lg border px-4 py-3 text-left transition ${
+                  className={`flex items-center justify-between gap-2 rounded-lg border px-4 py-3 text-left backdrop-blur-sm transition ${
                     isMine
                       ? "border-amber-500 bg-amber-950/40"
                       : claimedBy
-                        ? "cursor-not-allowed border-stone-800 bg-stone-900/30 opacity-60"
-                        : "border-stone-700 bg-stone-900/50 hover:border-stone-400"
+                        ? "cursor-not-allowed border-[var(--card-border)] bg-white/[0.02] opacity-60"
+                        : "border-[var(--card-border)] bg-white/[0.04] hover:border-white/25"
                   }`}
                 >
                   <span className="flex items-center gap-2 font-semibold">
@@ -213,16 +218,22 @@ export default function Lobby({
                     />
                     {nation}
                   </span>
-                  <span className="truncate text-sm text-stone-400">
-                    {isMine
-                      ? "Vous ✓"
-                      : (claimedBy?.display_name ?? "Libre")}
+                  <span className="truncate text-sm text-[var(--text-2)]">
+                    {isMine ? (
+                      "Vous ✓"
+                    ) : claimedBy ? (
+                      claimedBy.display_name
+                    ) : (
+                      <span className="rounded-lg bg-white/10 px-2 py-0.5 text-xs font-semibold">
+                        🤖 Bot
+                      </span>
+                    )}
                   </span>
                 </button>
               );
             })}
           </div>
-          <p className="mt-2 text-sm text-stone-500">
+          <p className="mt-2 text-sm text-[var(--text-2)]">
             Les nations libres au lancement seront contrôlées par des bots.
           </p>
 
@@ -230,13 +241,13 @@ export default function Lobby({
             <button
               onClick={handleStart}
               disabled={isPending}
-              className="mt-6 w-full rounded-lg bg-amber-600 py-3.5 text-lg font-bold text-stone-950 transition hover:bg-amber-500 disabled:opacity-50"
+              className="mt-6 w-full rounded-lg bg-amber-500 py-3.5 text-lg font-bold text-stone-950 shadow-lg shadow-amber-900/30 transition hover:bg-amber-400 disabled:opacity-50"
             >
               {isPending ? "Lancement…" : "⚔️ Lancer la partie"}
             </button>
           )}
           {!isHost && room.status === "waiting" && (
-            <p className="mt-6 text-center text-sm text-stone-500">
+            <p className="mt-6 text-center text-sm text-[var(--text-2)]">
               En attente du lancement par l&apos;hôte…
             </p>
           )}

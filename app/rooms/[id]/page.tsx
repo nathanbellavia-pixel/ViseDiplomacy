@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { currentUser } from "@clerk/nextjs/server";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import type { Room, RoomPlayer } from "@/lib/types";
@@ -31,8 +31,9 @@ export default async function RoomPage({
     .order("joined_at");
   let players = (playersData ?? []) as RoomPlayer[];
 
-  // Visiting the lobby of an open room joins it (this is the join-code flow).
+  // Members of a running game go straight to the board.
   const isMember = players.some((p) => p.user_id === user.id);
+  if (isMember && room.status === "active") redirect(`/rooms/${id}/game`);
   if (!isMember && room.status === "waiting" && players.length < room.max_players) {
     const displayName =
       user.firstName ??

@@ -4,6 +4,7 @@ import { currentUser } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { NATIONS, type Nation, type Room, type RoomPlayer } from "@/lib/types";
+import { buildInitialTerritories } from "@/lib/game/setup";
 
 export interface ActionState {
   error?: string;
@@ -247,6 +248,14 @@ export async function startGame(roomId: string): Promise<ActionState> {
     }));
     const { error } = await supabase.from("room_players").insert(bots);
     if (error) return { error: "Impossible de créer les bots. Réessayez." };
+  }
+
+  // Seed the board with the classic 1901 starting positions
+  const { error: territoryError } = await supabase
+    .from("territories")
+    .insert(buildInitialTerritories().map((t) => ({ ...t, room_id: roomId })));
+  if (territoryError) {
+    return { error: "Impossible d'initialiser le plateau." };
   }
 
   const now = new Date();

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import { claimNation, startGame } from "@/app/actions";
 import {
@@ -20,11 +21,19 @@ export default function Lobby({
   initialPlayers: RoomPlayer[];
   userId: string;
 }) {
+  const router = useRouter();
   const [room, setRoom] = useState<Room>(initialRoom);
   const [players, setPlayers] = useState<RoomPlayer[]>(initialPlayers);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [isPending, startTransition] = useTransition();
+
+  // Once the host launches, everyone moves to the game page
+  useEffect(() => {
+    if (room.status === "active") {
+      router.replace(`/rooms/${room.id}/game`);
+    }
+  }, [room.status, room.id, router]);
 
   const me = players.find((p) => p.user_id === userId);
   const isHost = room.host_id === userId;

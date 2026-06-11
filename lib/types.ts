@@ -49,7 +49,73 @@ export interface RoomPlayer {
   is_host: boolean;
   is_bot: boolean;
   is_alive: boolean;
+  is_eliminated: boolean;
   joined_at: string;
+}
+
+export interface Territory {
+  id: string;
+  room_id: string;
+  code: string;
+  name: string;
+  type: "land" | "sea" | "coast";
+  is_supply_center: boolean;
+  owner_nation: Nation | null;
+  occupant_nation: Nation | null;
+  unit_type: "army" | "fleet" | null;
+  unit_coast: string | null;
+}
+
+export interface Phase {
+  id: string;
+  room_id: string;
+  phase_number: number;
+  year: number;
+  season: "spring" | "autumn" | "winter";
+  type: "movement" | "retreat" | "adjustment";
+  status: "pending" | "active" | "resolved";
+  starts_at: string | null;
+  ends_at: string | null;
+  resolved_at: string | null;
+}
+
+export type OrderType =
+  | "hold"
+  | "move"
+  | "support"
+  | "convoy"
+  | "retreat"
+  | "build"
+  | "disband";
+
+export interface Order {
+  id: string;
+  room_id: string;
+  phase_id: string;
+  player_id: string;
+  nation: Nation;
+  unit_type: "army" | "fleet";
+  unit_territory: string;
+  order_type: OrderType;
+  target_territory: string | null;
+  aux_territory: string | null;
+  status: "pending" | "submitted" | "resolved";
+  result: string | null;
+  is_submitted: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PrivateMessage {
+  id: string;
+  room_id: string;
+  sender_player_id: string;
+  recipient_player_id: string;
+  sender_user_id: string | null;
+  recipient_user_id: string | null;
+  content: string;
+  created_at: string;
+  read_at: string | null;
 }
 
 export interface RoomWithCount extends Room {

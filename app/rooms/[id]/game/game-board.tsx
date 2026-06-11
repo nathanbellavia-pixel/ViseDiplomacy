@@ -13,6 +13,7 @@ import {
   expirePhase,
   submitAdjustments,
   submitOrders,
+  submitRetreats,
   type LocalOrder,
 } from "@/app/game-actions";
 import {
@@ -31,6 +32,7 @@ import {
   type Nation,
   type Order,
   type Phase,
+  type PhaseSummary,
   type Room,
   type RoomPlayer,
   type Territory,
@@ -116,6 +118,11 @@ export default function GameBoard({
   const [builds, setBuilds] = useState<{ prov: string; unit: "army" | "fleet"; coast?: string | null }[]>([]);
   const [disbands, setDisbands] = useState<Set<string>>(new Set());
   const [buildPicker, setBuildPicker] = useState<string | null>(null);
+  // retreat phase: chosen destination per dislodged unit (null = disband)
+  const [retreats, setRetreats] = useState<Map<string, string | null>>(new Map());
+  const [retreatPicking, setRetreatPicking] = useState<string | null>(null);
+  const [lastResolved, setLastResolved] = useState<Phase | null>(null);
+  const [showResults, setShowResults] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [isPending, startTransition] = useTransition();
@@ -162,11 +169,22 @@ export default function GameBoard({
         setLocked(false);
         setBuilds([]);
         setDisbands(new Set());
+        setRetreats(new Map());
+        setRetreatPicking(null);
         setSelected(null);
         setMode("idle");
       }
       setPhase(newPhase);
     }
+    const { data: resolved } = await supabase
+      .from("phases")
+      .select()
+      .eq("room_id", roomId)
+      .eq("status", "resolved")
+      .order("resolved_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (resolved) setLastResolved(resolved as Phase);
     const phaseId = (p as Phase | null)?.id;
     if (!phaseId) return;
     const [{ data: submitted }, { data: mine }] = await Promise.all([
@@ -242,16 +260,25 @@ export default function GameBoard({
     if (
       remainingMs !== null &&
       remainingMs <= 0 &&
-      phase.type === "movement" &&
+      room.status === "active" &&
       expireFired.current !== phase.id
     ) {
       expireFired.current = phase.id;
       expirePhase(roomId).then(() => refetchPhaseAndOrders());
     }
-  }, [remainingMs, phase.id, phase.type, roomId, refetchPhaseAndOrders]);
+  }, [remainingMs, phase.id, room.status, roomId, refetchPhaseAndOrders]);
 
   // ------------------------------------------------------- selection logic
   const isAdjustment = phase.type === "adjustment";
+  const isRetreat = phase.type === "retreat";
+  const isFinished = room.status === "finished";
+  const myDislodged = useMemo(
+    () =>
+      isRetreat
+        ? (phase.summary?.dislodged ?? []).filter((d) => d.nation === myNation)
+        : [],
+    [isRetreat, phase.summary, myNation]
+  );
   const mySc = myNation ? supplyCenterCount(territories, myNation) : 0;
   const myUnitCount = myNation ? unitCount(territories, myNation) : 0;
   const delta = mySc - myUnitCount;
@@ -261,7 +288,13 @@ export default function GameBoard({
   );
 
   const highlights = useMemo(() => {
-    if (locked || isSpectator || isAdjustment) return new Set<string>();
+    if (locked || isSpectator || isAdjustment || isFinished) return new Set<string>();
+    if (isRetreat) {
+      const d = retreatPicking
+        ? myDislodged.find((x) => x.prov === retreatPicking)
+        : undefined;
+      return new Set((d?.options ?? []).map((loc) => loc.split("/")[0]));
+    }
     if (mode === "move" && selectedUnit) {
       return new Set(moveTargets(selectedUnit).map((t) => t.prov));
     }
@@ -274,7 +307,19 @@ export default function GameBoard({
       return set;
     }
     return new Set<string>();
-  }, [mode, selectedUnit, supportAux, unitAt, locked, isSpectator, isAdjustment]);
+  }, [
+    mode,
+    selectedUnit,
+    supportAux,
+    unitAt,
+    locked,
+    isSpectator,
+    isAdjustment,
+    isFinished,
+    isRetreat,
+    retreatPicking,
+    myDislodged,
+  ]);
 
   const supportHighlights = useMemo(() => {
     if (mode !== "support-pick-unit" || !selectedUnit) return new Set<string>();
@@ -303,7 +348,17 @@ export default function GameBoard({
   };
 
   const handleProvinceClick = (prov: string) => {
-    if (locked || isSpectator) return;
+    if (locked || isSpectator || isFinished) return;
+    if (isRetreat) {
+      if (!retreatPicking) return;
+      const d = myDislodged.find((x) => x.prov === retreatPicking);
+      const loc = d?.options.find((o) => o.split("/")[0] === prov);
+      if (loc) {
+        setRetreats((prev) => new Map(prev).set(retreatPicking, loc));
+        setRetreatPicking(null);
+      }
+      return;
+    }
     if (isAdjustment) {
       if (delta > 0 && slots.some((s) => s.prov === prov) && !builds.some((b) => b.prov === prov)) {
         setBuildPicker(prov);
@@ -321,7 +376,8 @@ export default function GameBoard({
   };
 
   const handleUnitClick = (prov: string) => {
-    if (locked || isSpectator) return;
+    if (locked || isSpectator || isFinished) return;
+    if (isRetreat) return;
     if (isAdjustment) {
       if (delta < 0 && myUnits.some((u) => u.prov === prov)) {
         setDisbands((prev) => {
@@ -357,9 +413,14 @@ export default function GameBoard({
   const handleSubmit = () => {
     setError(null);
     startTransition(async () => {
-      const result = isAdjustment
-        ? await submitAdjustments(roomId, builds, [...disbands])
-        : await submitOrders(roomId, [...orders.values()]);
+      const result = isRetreat
+        ? await submitRetreats(
+            roomId,
+            myDislodged.map((d) => ({ prov: d.prov, to: retreats.get(d.prov) ?? null }))
+          )
+        : isAdjustment
+          ? await submitAdjustments(roomId, builds, [...disbands])
+          : await submitOrders(roomId, [...orders.values()]);
       if (result.error) setError(result.error);
       else {
         setLocked(true);
@@ -384,10 +445,65 @@ export default function GameBoard({
             Math.floor((remainingMs % 60000) / 1000)
           ).padStart(2, "0")}`;
 
-  const mapOrders = isAdjustment ? [] : [...orders.values()];
+  const mapOrders = isAdjustment || isRetreat ? [] : [...orders.values()];
+  const resultOrders =
+    showResults && lastResolved?.summary ? lastResolved.summary.orders : [];
 
   return (
     <div className="grid gap-5 lg:grid-cols-[300px_1fr]">
+      {/* ----------------------------------------------- end of game */}
+      {isFinished && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-stone-950/80 p-6 backdrop-blur-sm"
+          data-testid="victory-screen"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-amber-600/60 bg-stone-900 p-8 text-center shadow-2xl">
+            {room.winner_nation ? (
+              <>
+                <p className="text-5xl">🏆</p>
+                <h2 className="mt-3 text-2xl font-bold text-amber-400" data-winner={room.winner_nation}>
+                  {room.winner_nation} remporte la partie !
+                </h2>
+                <p className="mt-1 text-sm text-stone-400">
+                  {players.find((p) => p.nation === room.winner_nation)?.display_name ?? "—"}
+                  {" · "}
+                  {supplyCenterCount(territories, room.winner_nation)} centres de ravitaillement
+                </p>
+              </>
+            ) : (
+              <h2 className="text-2xl font-bold text-amber-400">Fin de la partie</h2>
+            )}
+            <ol className="mt-5 space-y-1.5 text-left">
+              {ranked.map((p, i) => (
+                <li
+                  key={p.id}
+                  className="flex items-center gap-2 rounded-lg bg-stone-800/60 px-3 py-1.5 text-sm"
+                >
+                  <span className="w-5 font-mono text-stone-500">{i + 1}.</span>
+                  <span
+                    className="h-3 w-3 shrink-0 rounded-full"
+                    style={{ backgroundColor: NATION_COLORS[p.nation!] }}
+                  />
+                  <span className="min-w-0 truncate">
+                    {p.display_name}
+                    <span className="text-stone-500"> · {p.nation}</span>
+                  </span>
+                  <span className="ml-auto font-mono">
+                    ★{supplyCenterCount(territories, p.nation!)}
+                  </span>
+                </li>
+              ))}
+            </ol>
+            <a
+              href="/"
+              className="mt-6 inline-block rounded-lg bg-amber-600 px-5 py-2 font-bold text-stone-950 transition hover:bg-amber-500"
+            >
+              Retour au salon
+            </a>
+          </div>
+        </div>
+      )}
+
       {/* ------------------------------------------------------- sidebar */}
       <aside className="space-y-4">
         <div className="rounded-xl border border-stone-800 bg-stone-900/60 p-4">
@@ -446,14 +562,113 @@ export default function GameBoard({
           </ul>
         </div>
 
+        {/* ------------------------------------------- last phase results */}
+        {lastResolved?.summary && !isFinished && (
+          <div className="rounded-xl border border-stone-800 bg-stone-900/60 p-4" data-testid="results-panel">
+            <button
+              onClick={() => setShowResults((v) => !v)}
+              className="flex w-full items-center justify-between font-semibold text-stone-300"
+            >
+              <span>
+                Résultats — {SEASON_LABEL[lastResolved.season]} {lastResolved.year}{" "}
+                <span className="text-stone-500">({PHASE_TYPE_LABEL[lastResolved.type]})</span>
+              </span>
+              <span className="text-stone-500">{showResults ? "▾" : "▸"}</span>
+            </button>
+            {showResults && (
+              <ul className="mt-2 max-h-44 space-y-1 overflow-y-auto text-xs text-stone-400">
+                {lastResolved.summary.events.map((e, i) => (
+                  <li key={i} data-result-event>
+                    {e}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
         {/* ---------------------------------------------- order panel */}
-        {isSpectator ? (
+        {isFinished ? null : isSpectator ? (
           <div
             className="rounded-xl border border-stone-700 bg-stone-900/60 p-4 text-sm text-stone-400"
             data-testid="spectator-banner"
           >
             👁 Vous êtes spectateur{me.is_eliminated ? " (éliminé)" : ""}. Vous voyez tout,
             mais ne pouvez plus donner d&apos;ordres.
+          </div>
+        ) : isRetreat ? (
+          <div className="rounded-xl border border-stone-800 bg-stone-900/60 p-4" data-testid="retreat-panel">
+            <h2 className="mb-2 font-semibold">Retraites</h2>
+            {myDislodged.length === 0 ? (
+              <p className="text-sm text-stone-400">
+                Aucune de vos unités n&apos;est délogée — en attente des retraites adverses.
+              </p>
+            ) : locked ? (
+              <p className="text-sm font-semibold text-green-500" data-testid="orders-locked">
+                Retraites validées ✓
+              </p>
+            ) : (
+              <>
+                <p className="text-sm text-stone-300">
+                  Choisissez une destination pour chaque unité délogée, ou dissolvez-la.
+                </p>
+                <ul className="mt-2 space-y-1.5">
+                  {myDislodged.map((d) => {
+                    const choice = retreats.get(d.prov);
+                    return (
+                      <li key={d.prov} className="rounded-lg bg-stone-800/70 p-2 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            onClick={() =>
+                              setRetreatPicking(retreatPicking === d.prov ? null : d.prov)
+                            }
+                            data-retreat-unit={d.prov}
+                            className={`font-semibold ${
+                              retreatPicking === d.prov ? "text-amber-400" : ""
+                            }`}
+                          >
+                            {d.unit === "army" ? "Armée" : "Flotte"} — {PROVINCES[d.prov].name}
+                          </button>
+                          <button
+                            onClick={() => {
+                              setRetreats((prev) => new Map(prev).set(d.prov, null));
+                              if (retreatPicking === d.prov) setRetreatPicking(null);
+                            }}
+                            data-retreat-disband={d.prov}
+                            className="rounded bg-stone-700 px-2 py-0.5 text-xs hover:bg-red-700"
+                          >
+                            Dissoudre
+                          </button>
+                        </div>
+                        <p className="mt-1 text-xs text-stone-400" data-retreat-choice={d.prov}>
+                          {choice === undefined
+                            ? d.options.length === 0
+                              ? "Aucune retraite possible — dissolution"
+                              : retreatPicking === d.prov
+                                ? "Cliquez une destination en surbrillance"
+                                : "À décider"
+                            : choice === null
+                              ? "Dissolution"
+                              : `→ ${PROVINCES[choice.split("/")[0]].name}`}
+                        </p>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
+                <button
+                  onClick={handleSubmit}
+                  disabled={
+                    isPending ||
+                    myDislodged.some((d) => d.options.length > 0 && !retreats.has(d.prov))
+                  }
+                  data-testid="submit-orders"
+                  className="mt-3 w-full rounded-lg bg-amber-600 py-2.5 font-bold text-stone-950 transition hover:bg-amber-500 disabled:opacity-50"
+                >
+                  Valider les retraites
+                </button>
+              </>
+            )}
           </div>
         ) : isAdjustment ? (
           <div className="rounded-xl border border-stone-800 bg-stone-900/60 p-4" data-testid="adjustment-panel">
@@ -691,6 +906,7 @@ export default function GameBoard({
           supportHighlights={supportHighlights}
           disbandMarks={disbands}
           buildMarks={builds}
+          resultOrders={resultOrders}
           onProvinceClick={handleProvinceClick}
           onUnitClick={handleUnitClick}
         />

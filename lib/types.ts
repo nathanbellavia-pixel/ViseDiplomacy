@@ -37,6 +37,7 @@ export interface Room {
   updated_at: string;
   started_at: string | null;
   finished_at: string | null;
+  winner_nation: Nation | null;
 }
 
 export interface RoomPlayer {
@@ -73,10 +74,38 @@ export interface Phase {
   year: number;
   season: "spring" | "autumn" | "winter";
   type: "movement" | "retreat" | "adjustment";
-  status: "pending" | "active" | "resolved";
+  status: "pending" | "active" | "resolving" | "resolved";
   starts_at: string | null;
   ends_at: string | null;
   resolved_at: string | null;
+  summary: PhaseSummary | null;
+}
+
+// Stored on a phase row once resolved (and, for dislodgements, on the retreat
+// phase that follows) — drives the post-resolution feedback UI.
+export interface SummaryOrder {
+  prov: string;
+  nation: Nation;
+  unit: "army" | "fleet";
+  type: OrderType;
+  target: string | null;
+  aux: string | null;
+  result: string;
+}
+
+export interface DislodgedUnit {
+  prov: string;
+  nation: Nation;
+  unit: "army" | "fleet";
+  coast: string | null;
+  attackerFrom: string;
+  options: string[]; // "prov" or "prov/coast"
+}
+
+export interface PhaseSummary {
+  events: string[];
+  orders: SummaryOrder[];
+  dislodged: DislodgedUnit[];
 }
 
 export type OrderType =

@@ -3,8 +3,16 @@
 import { useEffect, useMemo, useRef } from "react";
 import { MAP_SVG, MAP_VIEWBOX } from "@/lib/game/map-svg";
 import { COAST_UNIT_POS, PROVINCES } from "@/lib/game/map-data";
-import { NATION_COLORS, type Territory } from "@/lib/types";
+import { NATION_COLORS, type SummaryOrder, type Territory } from "@/lib/types";
 import type { LocalOrder } from "@/app/game-actions";
+
+const RESULT_COLORS: Record<string, string> = {
+  success: "#4ade80",
+  bounced: "#f87171",
+  cut: "#fb923c",
+  dislodged: "#ef4444",
+  invalid: "#a8a29e",
+};
 
 const SVG_ID_TO_CODE: Record<string, string> = Object.fromEntries(
   Object.entries(PROVINCES).map(([code, info]) => [info.svgId, code])
@@ -36,6 +44,7 @@ export interface MapViewProps {
   supportHighlights: Set<string>; // units selectable as support beneficiaries
   disbandMarks: Set<string>;
   buildMarks: { prov: string; unit: "army" | "fleet" }[];
+  resultOrders: SummaryOrder[]; // last resolved phase, drawn under everything
   onProvinceClick: (code: string) => void;
   onUnitClick: (code: string) => void;
 }
@@ -48,6 +57,7 @@ export default function MapView({
   supportHighlights,
   disbandMarks,
   buildMarks,
+  resultOrders,
   onProvinceClick,
   onUnitClick,
 }: MapViewProps) {
@@ -177,7 +187,108 @@ export default function MapView({
           >
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#22d3ee" />
           </marker>
+          {Object.entries(RESULT_COLORS).map(([result, color]) => (
+            <marker
+              key={result}
+              id={`vd-arrow-${result}`}
+              viewBox="0 0 10 10"
+              refX="8"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
+            </marker>
+          ))}
         </defs>
+
+        {/* last phase results (under everything else) */}
+        {resultOrders.map((o) => {
+          const fromInfo = PROVINCES[o.prov];
+          if (!fromInfo) return null;
+          const a = fromInfo.unit;
+          const color = RESULT_COLORS[o.result] ?? "#a8a29e";
+          if (o.type === "move" || o.type === "retreat") {
+            const destProv = o.target?.split("/")[0];
+            const b = destProv ? PROVINCES[destProv]?.unit : null;
+            if (!b) return null;
+            return (
+              <g key={`r-${o.prov}`} data-result-arrow={o.prov} data-result={o.result} opacity="0.85">
+                <line
+                  x1={a.x}
+                  y1={a.y}
+                  x2={b.x}
+                  y2={b.y}
+                  stroke={color}
+                  strokeWidth="4"
+                  markerEnd={`url(#vd-arrow-${o.result in RESULT_COLORS ? o.result : "invalid"})`}
+                  strokeDasharray={o.result === "success" ? "14 7" : undefined}
+                >
+                  {o.result === "success" && (
+                    <animate
+                      attributeName="stroke-dashoffset"
+                      from="42"
+                      to="0"
+                      dur="1.2s"
+                      repeatCount="indefinite"
+                    />
+                  )}
+                </line>
+                {o.result === "bounced" && (
+                  <text
+                    x={(a.x + b.x) / 2}
+                    y={(a.y + b.y) / 2 + 6}
+                    textAnchor="middle"
+                    fontSize="22"
+                    fontWeight="bold"
+                    fill={color}
+                  >
+                    ✕
+                  </text>
+                )}
+              </g>
+            );
+          }
+          if (o.type === "support" && o.aux) {
+            const auxPos = PROVINCES[o.aux]?.unit;
+            const destPos =
+              o.target && o.target !== o.aux ? PROVINCES[o.target]?.unit : auxPos;
+            if (!auxPos || !destPos) return null;
+            return (
+              <line
+                key={`r-${o.prov}`}
+                data-result-arrow={o.prov}
+                data-result={o.result}
+                x1={a.x}
+                y1={a.y}
+                x2={destPos.x}
+                y2={destPos.y}
+                stroke={color}
+                strokeWidth="3"
+                strokeDasharray="6 5"
+                opacity="0.7"
+              />
+            );
+          }
+          if (o.result === "dislodged") {
+            return (
+              <text
+                key={`r-${o.prov}`}
+                data-result-arrow={o.prov}
+                data-result="dislodged"
+                x={a.x + 14}
+                y={a.y - 12}
+                fontSize="20"
+                fontWeight="bold"
+                fill={RESULT_COLORS.dislodged}
+              >
+                ⚠
+              </text>
+            );
+          }
+          return null;
+        })}
 
         {/* supply-center stars */}
         {territories

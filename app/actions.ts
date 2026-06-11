@@ -3,8 +3,9 @@
 import { currentUser } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 import { getSupabaseServer } from "@/lib/supabase/server";
-import { NATIONS, type Nation, type Room, type RoomPlayer } from "@/lib/types";
+import { NATIONS, type Nation, type Phase, type Room, type RoomPlayer } from "@/lib/types";
 import { buildInitialTerritories } from "@/lib/game/setup";
+import { submitBotOrders } from "@/lib/game/resolve";
 
 export interface ActionState {
   error?: string;
@@ -259,19 +260,26 @@ export async function startGame(roomId: string): Promise<ActionState> {
   }
 
   const now = new Date();
-  const { error: phaseError } = await supabase.from("phases").insert({
-    room_id: roomId,
-    phase_number: 1,
-    year: 1901,
-    season: "spring",
-    type: "movement",
-    status: "active",
-    starts_at: now.toISOString(),
-    ends_at: new Date(
-      now.getTime() + typedRoom.phase_duration_minutes * 60_000
-    ).toISOString(),
-  });
-  if (phaseError) return { error: "Impossible de créer la première phase." };
+  const { data: phase, error: phaseError } = await supabase
+    .from("phases")
+    .insert({
+      room_id: roomId,
+      phase_number: 1,
+      year: 1901,
+      season: "spring",
+      type: "movement",
+      status: "active",
+      starts_at: now.toISOString(),
+      ends_at: new Date(
+        now.getTime() + typedRoom.phase_duration_minutes * 60_000
+      ).toISOString(),
+    })
+    .select()
+    .single();
+  if (phaseError || !phase) return { error: "Impossible de créer la première phase." };
+
+  // bot powers play from the very first phase
+  await submitBotOrders(roomId, phase as Phase);
 
   const { error: roomError } = await supabase
     .from("rooms")

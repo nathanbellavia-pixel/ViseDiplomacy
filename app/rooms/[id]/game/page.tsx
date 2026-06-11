@@ -25,7 +25,7 @@ export default async function GamePage({
   const room = roomData as Room;
   if (room.status === "waiting") redirect(`/rooms/${id}`);
 
-  const [{ data: players }, { data: phase }, { data: territories }] =
+  const [{ data: players }, { data: activePhase }, { data: territories }] =
     await Promise.all([
       supabase.from("room_players").select().eq("room_id", id).order("joined_at"),
       supabase
@@ -41,6 +41,19 @@ export default async function GamePage({
 
   const me = ((players ?? []) as RoomPlayer[]).find((p) => p.user_id === user.id);
   if (!me) redirect(`/rooms/${id}`);
+
+  // a finished game has no active phase — show the final board instead
+  let phase = activePhase as Phase | null;
+  if (!phase) {
+    const { data: lastPhase } = await supabase
+      .from("phases")
+      .select()
+      .eq("room_id", id)
+      .order("resolved_at", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle();
+    phase = lastPhase as Phase | null;
+  }
   if (!phase) redirect(`/rooms/${id}`);
 
   const { data: myOrders } = await supabase

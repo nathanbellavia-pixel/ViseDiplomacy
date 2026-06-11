@@ -5,15 +5,14 @@ import { getSupabaseServer } from "@/lib/supabase/server";
 import type { Phase, Room, RoomPlayer, Territory } from "@/lib/types";
 import {
   buildSlots,
-  canReach,
   moveTargets,
   supplyCenterCount,
   supportDestinations,
   unitCount,
   unitsOnBoard,
-  type BoardUnit,
 } from "@/lib/game/logic";
 import { HOME_SCS } from "@/lib/game/setup";
+import { maybeResolve, resolveIfExpired } from "@/lib/game/resolve";
 
 export interface ActionState {
   error?: string;
@@ -188,6 +187,62 @@ export async function submitOrders(
     .eq("player_id", me.id);
   const { error } = await supabase.from("orders").insert(rows);
   if (error) return { error: "Impossible d'enregistrer les ordres. Réessayez." };
+  await maybeResolve(roomId); // fires when every human has submitted
+  return {};
+}
+
+export async function submitRetreats(
+  roomId: string,
+  retreats: { prov: string; to: string | null }[]
+): Promise<ActionState> {
+  const ctx = await loadGame(roomId);
+  if ("error" in ctx) return ctx;
+  const { phase, me } = ctx;
+  if (phase.type !== "retreat")
+    return { error: "Ce n'est pas une phase de retraite." };
+
+  const mine = (phase.summary?.dislodged ?? []).filter(
+    (d) => d.nation === me.nation
+  );
+  if (mine.length === 0) return { error: "Aucune retraite à ordonner." };
+
+  const supabase = getSupabaseServer();
+  const { data: existing } = await supabase
+    .from("orders")
+    .select("id")
+    .eq("phase_id", phase.id)
+    .eq("player_id", me.id)
+    .eq("is_submitted", true)
+    .limit(1);
+  if (existing && existing.length > 0)
+    return { error: "Vos retraites sont déjà validées." };
+
+  const rows: Record<string, unknown>[] = [];
+  for (const d of mine) {
+    const wanted = retreats.find((r) => r.prov === d.prov);
+    const to =
+      wanted?.to && d.options.includes(wanted.to) ? wanted.to : null;
+    rows.push({
+      room_id: roomId,
+      phase_id: phase.id,
+      player_id: me.id,
+      nation: me.nation,
+      unit_type: d.unit,
+      unit_territory: d.prov,
+      order_type: to ? "retreat" : "disband",
+      target_territory: to,
+      status: "submitted",
+      is_submitted: true,
+    });
+  }
+  await supabase
+    .from("orders")
+    .delete()
+    .eq("phase_id", phase.id)
+    .eq("player_id", me.id);
+  const { error } = await supabase.from("orders").insert(rows);
+  if (error) return { error: "Impossible d'enregistrer les retraites." };
+  await maybeResolve(roomId);
   return {};
 }
 
@@ -281,61 +336,15 @@ export async function submitAdjustments(
     const { error } = await supabase.from("orders").insert(rows);
     if (error) return { error: "Impossible d'enregistrer les ajustements." };
   }
+  await maybeResolve(roomId);
   return {};
 }
 
-// Called by any client when the countdown reaches zero: every unit without a
-// submitted order auto-holds. Idempotent thanks to unique(phase_id, territory).
+// Called by any client when the countdown reaches zero: non-submitted units
+// auto-hold and the phase resolves. Safe to call concurrently — resolution
+// claims the phase atomically.
 export async function expirePhase(roomId: string): Promise<ActionState> {
-  const supabase = getSupabaseServer();
-  const [{ data: phase }, { data: players }, { data: territories }] =
-    await Promise.all([
-      supabase
-        .from("phases")
-        .select()
-        .eq("room_id", roomId)
-        .eq("status", "active")
-        .order("phase_number", { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-      supabase.from("room_players").select().eq("room_id", roomId),
-      supabase.from("territories").select().eq("room_id", roomId),
-    ]);
-  const typedPhase = phase as Phase | null;
-  if (!typedPhase?.ends_at || typedPhase.type !== "movement") return {};
-  if (new Date(typedPhase.ends_at).getTime() > Date.now()) return {};
-
-  const playerByNation = new Map(
-    ((players ?? []) as RoomPlayer[])
-      .filter((p) => p.nation)
-      .map((p) => [p.nation!, p])
-  );
-  const { data: submitted } = await supabase
-    .from("orders")
-    .select("unit_territory")
-    .eq("phase_id", typedPhase.id)
-    .eq("is_submitted", true);
-  const covered = new Set((submitted ?? []).map((o) => o.unit_territory as string));
-
-  const rows = unitsOnBoard((territories ?? []) as Territory[])
-    .filter((u) => !covered.has(u.prov) && playerByNation.has(u.nation as never))
-    .map((u) => ({
-      room_id: roomId,
-      phase_id: typedPhase.id,
-      player_id: playerByNation.get(u.nation as never)!.id,
-      nation: u.nation,
-      unit_type: u.unit,
-      unit_territory: u.prov,
-      order_type: "hold",
-      status: "submitted",
-      is_submitted: true,
-    }));
-  if (rows.length > 0) {
-    // ignore_duplicates: concurrent clients may race on the same expiry
-    await supabase
-      .from("orders")
-      .upsert(rows, { onConflict: "phase_id,unit_territory", ignoreDuplicates: true });
-  }
+  await resolveIfExpired(roomId);
   return {};
 }
 

@@ -1,11 +1,14 @@
-// Server-side deadline trigger: Vercel Cron hits this every minute and any
-// active phase past its deadline resolves (clients also fire expirePhase as
-// they watch the countdown, so this is the backstop, not the only path).
+// Daily safety net (Vercel Cron, once a day): force-resolve phases whose
+// deadline passed more than 30 minutes ago and that nobody resolved — e.g.
+// every player closed their browser. The PRIMARY deadline trigger is each
+// client POSTing /api/resolve-phase when its countdown reaches zero.
 import { NextResponse } from "next/server";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { resolveIfExpired } from "@/lib/game/resolve";
 
 export const dynamic = "force-dynamic";
+
+const GRACE_MS = 30 * 60_000;
 
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
@@ -18,7 +21,7 @@ export async function GET(req: Request) {
     .from("phases")
     .select("room_id")
     .eq("status", "active")
-    .lt("ends_at", new Date().toISOString());
+    .lt("ends_at", new Date(Date.now() - GRACE_MS).toISOString());
   const roomIds = [...new Set((data ?? []).map((r) => r.room_id as string))];
 
   const errors: string[] = [];

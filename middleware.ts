@@ -1,12 +1,14 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-// /api/cron is Vercel Cron's entry point — it authenticates with CRON_SECRET
-// inside the handler, not with a Clerk session
+// /api/cron (Vercel Cron, CRON_SECRET) and /api/resolve-phase (client
+// deadline trigger, x-resolve-token) authenticate inside their handlers,
+// not with a Clerk session
 const isPublicRoute = createRouteMatcher([
   "/",
   "/sign-in(.*)",
   "/sign-up(.*)",
   "/api/cron(.*)",
+  "/api/resolve-phase",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {

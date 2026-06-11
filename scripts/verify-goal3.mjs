@@ -76,6 +76,9 @@ const activePhase = async (roomId) => {
   return data;
 };
 
+const resolveToken =
+  env.match(/^NEXT_PUBLIC_RESOLVE_TOKEN=(.+)$/m)?.[1]?.trim() ?? "";
+
 const expireActivePhase = async (roomId) => {
   const phase = await activePhase(roomId);
   if (!phase) fail("no active phase to expire");
@@ -83,8 +86,12 @@ const expireActivePhase = async (roomId) => {
     .from("phases")
     .update({ ends_at: new Date(Date.now() - 1000).toISOString() })
     .eq("id", phase.id);
-  const res = await fetch(`${BASE}/api/cron/resolve`);
-  if (!res.ok) fail(`cron endpoint: HTTP ${res.status}`);
+  const res = await fetch(`${BASE}/api/resolve-phase`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-resolve-token": resolveToken },
+    body: JSON.stringify({ roomId }),
+  });
+  if (!res.ok) fail(`resolve-phase endpoint: HTTP ${res.status}`);
   return phase;
 };
 

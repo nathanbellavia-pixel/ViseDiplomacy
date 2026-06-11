@@ -12,7 +12,7 @@ import {
   unitsOnBoard,
 } from "@/lib/game/logic";
 import { HOME_SCS } from "@/lib/game/setup";
-import { maybeResolve, resolveIfExpired } from "@/lib/game/resolve";
+import { maybeResolve } from "@/lib/game/resolve";
 
 export interface ActionState {
   error?: string;
@@ -340,13 +340,6 @@ export async function submitAdjustments(
   return {};
 }
 
-// Called by any client when the countdown reaches zero: non-submitted units
-// auto-hold and the phase resolves. Safe to call concurrently — resolution
-// claims the phase atomically.
-export async function expirePhase(roomId: string): Promise<ActionState> {
-  await resolveIfExpired(roomId);
-  return {};
-}
 
 export async function sendMessage(
   roomId: string,

@@ -10,7 +10,6 @@ import {
 } from "react";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import {
-  expirePhase,
   submitAdjustments,
   submitOrders,
   submitRetreats,
@@ -280,8 +279,22 @@ export default function GameBoard({
       room.status === "active" &&
       expireFired.current !== phase.id
     ) {
+      // fire exactly once per phase; the endpoint is idempotent so other
+      // clients hitting it at the same moment are harmless
       expireFired.current = phase.id;
-      expirePhase(roomId).then(() => refetchPhaseAndOrders());
+      fetch("/api/resolve-phase", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-resolve-token": process.env.NEXT_PUBLIC_RESOLVE_TOKEN ?? "",
+        },
+        body: JSON.stringify({ roomId }),
+      })
+        .then(() => refetchPhaseAndOrders())
+        .catch(() => {
+          // allow a retry on the next tick if the call never went out
+          expireFired.current = null;
+        });
     }
   }, [remainingMs, phase.id, room.status, roomId, refetchPhaseAndOrders]);
 

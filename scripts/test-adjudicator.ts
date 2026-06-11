@@ -184,6 +184,18 @@ const hold = (prov: string): AdjOrder => ({ type: "hold", prov });
   check("unit did not move", r.moved.size, 0);
 }
 
+// 13. support declared before the supported move in the order list
+{
+  console.log("support order listed before the move");
+  const r = adjudicate(
+    [A("hol", "France"), A("pic", "France"), A("bel", "Allemagne")],
+    [sup("hol", "pic", "bel"), mv("pic", "bel"), hold("bel")]
+  );
+  check("early support is valid", r.results.get("hol"), "success");
+  check("supported attack lands", r.results.get("pic"), "success");
+  check("defender dislodged", r.results.get("bel"), "dislodged");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} test(s) FAILED`);
   process.exit(1);

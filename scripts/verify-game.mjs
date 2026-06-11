@@ -1,5 +1,9 @@
 // End-to-end verification of Goal 2: map, orders, adjustments, chat.
 // Usage: node scripts/verify-game.mjs (server must be running on :3001)
+//
+// SUPERSEDED by verify-goal3.mjs: since Goal 3, a phase resolves as soon as
+// every human submits, so the "both players stay locked" and manual-winter
+// steps below no longer match the engine. Kept for reference.
 import { chromium } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 import { mkdirSync, readFileSync } from "node:fs";

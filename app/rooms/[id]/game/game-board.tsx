@@ -128,6 +128,9 @@ export default function GameBoard({
   const [isPending, startTransition] = useTransition();
   const expireFired = useRef<string | null>(null);
   const phaseIdRef = useRef(initialPhase.id);
+  const phaseStartRef = useRef(
+    initialPhase.starts_at ? new Date(initialPhase.starts_at).getTime() : 0
+  );
 
   const me = players.find((p) => p.id === initialMe.id) ?? initialMe;
   const myNation = me.nation;
@@ -162,9 +165,13 @@ export default function GameBoard({
       .maybeSingle();
     if (p) {
       const newPhase = p as Phase;
+      const startsAt = newPhase.starts_at ? new Date(newPhase.starts_at).getTime() : 0;
       if (phaseIdRef.current !== newPhase.id) {
-        // new phase: reset local order state
+        // concurrent refetches can return the PREVIOUS phase while a
+        // resolution is in flight — never move backwards
+        if (startsAt < phaseStartRef.current) return;
         phaseIdRef.current = newPhase.id;
+        phaseStartRef.current = startsAt;
         setOrders(new Map());
         setLocked(false);
         setBuilds([]);
@@ -184,7 +191,15 @@ export default function GameBoard({
       .order("resolved_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (resolved) setLastResolved(resolved as Phase);
+    if (resolved) {
+      setLastResolved((prev) =>
+        prev?.resolved_at &&
+        (resolved as Phase).resolved_at &&
+        new Date((resolved as Phase).resolved_at!) < new Date(prev.resolved_at)
+          ? prev
+          : (resolved as Phase)
+      );
+    }
     const phaseId = (p as Phase | null)?.id;
     if (!phaseId) return;
     const [{ data: submitted }, { data: mine }] = await Promise.all([
@@ -200,6 +215,8 @@ export default function GameBoard({
         .eq("player_id", me.id)
         .eq("is_submitted", true),
     ]);
+    // the phase may have advanced while these queries ran — drop stale data
+    if (phaseIdRef.current !== phaseId) return;
     setSubmittedPlayerIds(new Set((submitted ?? []).map((o) => o.player_id as string)));
     if (mine && mine.length > 0) {
       setOrders(new Map((mine as Order[]).map((o) => [o.unit_territory, dbOrderToLocal(o)])));
@@ -412,6 +429,7 @@ export default function GameBoard({
 
   const handleSubmit = () => {
     setError(null);
+    const phaseAtSubmit = phaseIdRef.current;
     startTransition(async () => {
       const result = isRetreat
         ? await submitRetreats(
@@ -423,7 +441,9 @@ export default function GameBoard({
           : await submitOrders(roomId, [...orders.values()]);
       if (result.error) setError(result.error);
       else {
-        setLocked(true);
+        // the submit may have triggered the resolution: if the phase already
+        // advanced while the action ran, don't lock the NEW phase
+        if (phaseIdRef.current === phaseAtSubmit) setLocked(true);
         refetchPhaseAndOrders();
       }
     });
@@ -514,7 +534,12 @@ export default function GameBoard({
           <p className="text-sm text-stone-400">
             Phase {phase.phase_number}/{room.total_phases} · {PHASE_TYPE_LABEL[phase.type]}
           </p>
-          <p className="mt-2 font-mono text-3xl font-bold" data-testid="phase-timer">
+          {/* server and client render different clock values — expected */}
+          <p
+            className="mt-2 font-mono text-3xl font-bold"
+            data-testid="phase-timer"
+            suppressHydrationWarning
+          >
             ⏱ {mmss}
           </p>
         </div>

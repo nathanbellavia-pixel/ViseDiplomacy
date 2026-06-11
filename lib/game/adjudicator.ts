@@ -83,24 +83,28 @@ export function adjudicate(units: AdjUnit[], orders: AdjOrder[]): Adjudication {
   }
 
   // ----------------------------------------------------------- validation
+  // moves first: support validity depends on the supported unit's move
   const moves = new Map<string, MoveCtx>();
   const supports = new Map<string, SupportCtx>();
   for (const u of units) {
     const o = orderAt.get(u.prov)!;
-    if (o.type === "move") {
-      const coast = o.targetCoast ?? null;
-      if (o.target !== u.prov && canMove(u, o.target, coast)) {
-        moves.set(u.prov, {
-          prov: u.prov,
-          target: o.target,
-          coast,
-          nation: u.nation,
-          state: "undecided",
-        });
-      } else {
-        results.set(u.prov, "invalid"); // stays and defends as a hold
-      }
-    } else if (o.type === "support") {
+    if (o.type !== "move") continue;
+    const coast = o.targetCoast ?? null;
+    if (o.target !== u.prov && canMove(u, o.target, coast)) {
+      moves.set(u.prov, {
+        prov: u.prov,
+        target: o.target,
+        coast,
+        nation: u.nation,
+        state: "undecided",
+      });
+    } else {
+      results.set(u.prov, "invalid"); // stays and defends as a hold
+    }
+  }
+  for (const u of units) {
+    const o = orderAt.get(u.prov)!;
+    if (o.type === "support") {
       const supported = unitAt.get(o.aux);
       const reach = reachableProvinces(u);
       const matches =

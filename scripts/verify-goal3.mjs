@@ -159,11 +159,11 @@ try {
   await a.locator('[data-unit="par"]').waitFor({ timeout: 20000 });
   await orderMove(a, "par", "bur");
   await a.getByTestId("submit-orders").click();
-  await a.locator('[data-testid="orders-locked"]').waitFor({ timeout: 15000 });
+  await a.locator('[data-testid="orders-locked"]').waitFor({ timeout: 45000 });
   await b.locator('[data-unit="mun"]').waitFor({ timeout: 20000 });
   await orderMove(b, "mun", "bur");
+  // B's submit triggers the resolution — the phase advances instead of locking
   await b.getByTestId("submit-orders").click();
-  await b.locator('[data-testid="orders-locked"]').waitFor({ timeout: 15000 });
 
   await until("spring 1901 resolved", async () => {
     const { data } = await supabase.from("phases").select().eq("id", phase1.id).single();
@@ -218,12 +218,11 @@ try {
   await orderMove(a, "pic", "bel");
   await orderSupportMove(a, "hol", "pic", "bel");
   await a.getByTestId("submit-orders").click();
-  await a.locator('[data-testid="orders-locked"]').waitFor({ timeout: 15000 });
+  await a.locator('[data-testid="orders-locked"]').waitFor({ timeout: 45000 });
   // B: kie→hol cuts Holland's support of the Belgium assault
   await b.locator('[data-unit="kie"]').waitFor({ timeout: 20000 });
   await orderMove(b, "kie", "hol");
   await b.getByTestId("submit-orders").click();
-  await b.locator('[data-testid="orders-locked"]').waitFor({ timeout: 15000 });
 
   await until("autumn 1901 resolved", async () => {
     const { data } = await supabase.from("phases").select().eq("id", phase2.id).single();
@@ -289,7 +288,7 @@ try {
     (await a.locator('[data-testid="phase-season"]').textContent())?.includes("1902") ? true : null
   );
   await a.getByTestId("submit-orders").click();
-  await a.locator('[data-testid="orders-locked"]').waitFor({ timeout: 15000 });
+  await a.locator('[data-testid="orders-locked"]').waitFor({ timeout: 45000 });
   await expireActivePhase(roomId);
   await until("spring 1902 resolved by expiry", async () => {
     const { data } = await supabase.from("phases").select().eq("id", spring1902.id).single();

@@ -340,14 +340,12 @@ async function advanceAfter(ctx: Ctx, territoriesNow: Territory[]) {
 
   if (phase.season === "autumn") {
     // 1. supply centers change hands based on occupation
-    for (const t of territoriesNow) {
-      if (t.is_supply_center && t.occupant_nation && t.occupant_nation !== t.owner_nation) {
-        await supabase
-          .from("territories")
-          .update({ owner_nation: t.occupant_nation })
-          .eq("id", t.id);
-        t.owner_nation = t.occupant_nation;
-      }
+    const flips = territoriesNow.filter(
+      (t) => t.is_supply_center && t.occupant_nation && t.occupant_nation !== t.owner_nation
+    );
+    if (flips.length > 0) {
+      for (const t of flips) t.owner_nation = t.occupant_nation;
+      await supabase.from("territories").upsert(flips.map((t) => ({ ...t })));
     }
     // 2. eliminations: zero supply centers after fall
     for (const p of ctx.players) {
@@ -450,13 +448,15 @@ async function resolveMovement(ctx: Ctx) {
 
   const adj = adjudicate(units, adjOrders);
 
-  // persist per-order results
-  for (const o of ctx.orders) {
-    const result = adj.results.get(o.unit_territory) ?? "invalid";
-    await supabase
-      .from("orders")
-      .update({ status: "resolved", result: result === "success" ? "success" : result })
-      .eq("id", o.id);
+  // persist per-order results (single round-trip)
+  if (ctx.orders.length > 0) {
+    await supabase.from("orders").upsert(
+      ctx.orders.map((o) => ({
+        ...o,
+        status: "resolved",
+        result: adj.results.get(o.unit_territory) ?? "invalid",
+      }))
+    );
   }
 
   // apply the new board in memory, then write the touched territories
@@ -478,13 +478,17 @@ async function resolveMovement(ctx: Ctx) {
     ...[...adj.moved.values()].map((m) => m.to),
     ...adj.dislodged.keys(),
   ]);
-  for (const code of touched) {
-    await setTerritoryUnit(room.id, code, newUnits.get(code) ?? null);
-    const t = terrByCode.get(code)!;
-    const nu = newUnits.get(code) ?? null;
-    t.occupant_nation = nu?.nation ?? null;
-    t.unit_type = nu?.type ?? null;
-    t.unit_coast = nu?.coast ?? null;
+  if (touched.size > 0) {
+    for (const code of touched) {
+      const t = terrByCode.get(code)!;
+      const nu = newUnits.get(code) ?? null;
+      t.occupant_nation = nu?.nation ?? null;
+      t.unit_type = nu?.type ?? null;
+      t.unit_coast = nu?.coast ?? null;
+    }
+    await supabase
+      .from("territories")
+      .upsert([...touched].map((code) => ({ ...terrByCode.get(code)! })));
   }
 
   // dislodgements & their legal retreats

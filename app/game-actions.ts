@@ -5,6 +5,8 @@ import { getSupabaseServer } from "@/lib/supabase/server";
 import type { Phase, Room, RoomPlayer, Territory } from "@/lib/types";
 import {
   buildSlots,
+  convoyTargets,
+  fleetConvoyOptions,
   moveTargets,
   supplyCenterCount,
   supportDestinations,
@@ -13,6 +15,7 @@ import {
 } from "@/lib/game/logic";
 import { HOME_SCS } from "@/lib/game/setup";
 import { maybeResolve } from "@/lib/game/resolve";
+import { drawAccepted } from "@/lib/game/phase-logic";
 
 export interface ActionState {
   error?: string;
@@ -21,10 +24,12 @@ export interface ActionState {
 // Client-side order shape; everything is re-validated server-side.
 export interface LocalOrder {
   prov: string;
-  type: "hold" | "move" | "support-hold" | "support-move";
+  type: "hold" | "move" | "support-hold" | "support-move" | "convoy";
   target?: string;
   targetCoast?: string | null;
   aux?: string;
+  /** Move goes by sea through convoying fleets. */
+  viaConvoy?: boolean;
 }
 
 interface GameContext {
@@ -124,15 +129,39 @@ export async function submitOrders(
       rows.push({ ...base, order_type: "hold" });
     } else if (o.type === "move") {
       if (!o.target) return { error: "Cible de mouvement manquante." };
-      const valid = moveTargets(unit).some(
+      const direct = moveTargets(unit).some(
         (t) => t.prov === o.target && (t.coast ?? null) === (o.targetCoast ?? null)
       );
+      // armies may also go by sea when fleets can form a convoy chain
+      const convoyable =
+        unit.unit === "army" && convoyTargets(unit, allUnits).has(o.target);
       // fleets moving to a split-coast province must specify a legal coast
-      if (!valid) return { error: `Mouvement illégal: ${o.prov} → ${o.target}.` };
+      if (!direct && !convoyable)
+        return { error: `Mouvement illégal: ${o.prov} → ${o.target}.` };
       rows.push({
         ...base,
         order_type: "move",
-        target_territory: o.targetCoast ? `${o.target}/${o.targetCoast}` : o.target,
+        target_territory:
+          direct && o.targetCoast ? `${o.target}/${o.targetCoast}` : o.target,
+      });
+    } else if (o.type === "convoy") {
+      if (!o.aux || !o.target)
+        return { error: "Convoi incomplet (armée ou destination manquante)." };
+      const army = unitAt.get(o.aux);
+      const opts = fleetConvoyOptions(unit, allUnits);
+      if (
+        !army ||
+        army.unit !== "army" ||
+        !opts.armies.includes(o.aux) ||
+        !opts.coastals.has(o.target) ||
+        o.target === o.aux
+      )
+        return { error: `Convoi illégal: ${o.prov} C ${o.aux} → ${o.target}.` };
+      rows.push({
+        ...base,
+        order_type: "convoy",
+        aux_territory: o.aux,
+        target_territory: o.target,
       });
     } else {
       if (!o.aux) return { error: "Unité soutenue manquante." };
@@ -340,6 +369,43 @@ export async function submitAdjustments(
   return {};
 }
 
+
+// Propose / accept (or retract) a mutual draw. The game ends in a shared
+// draw once every non-eliminated player accepts (bots always consent).
+export async function setDrawVote(
+  roomId: string,
+  accept: boolean
+): Promise<ActionState> {
+  const ctx = await loadGame(roomId);
+  if ("error" in ctx) return ctx;
+  const { room, me } = ctx;
+
+  const supabase = getSupabaseServer();
+  const { error } = await supabase
+    .from("room_players")
+    .update({ draw_vote: accept })
+    .eq("id", me.id);
+  if (error) return { error: "Vote impossible. Réessayez." };
+  if (!accept) return {};
+
+  const { data: players } = await supabase
+    .from("room_players")
+    .select()
+    .eq("room_id", roomId);
+  if (drawAccepted((players ?? []) as RoomPlayer[])) {
+    await supabase
+      .from("rooms")
+      .update({
+        status: "finished",
+        winner_nation: null,
+        is_draw: true,
+        finished_at: new Date().toISOString(),
+      })
+      .eq("id", room.id)
+      .eq("status", "active");
+  }
+  return {};
+}
 
 export async function sendMessage(
   roomId: string,

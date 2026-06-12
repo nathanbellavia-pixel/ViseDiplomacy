@@ -187,6 +187,17 @@ export default function MapView({
           >
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#22d3ee" />
           </marker>
+          <marker
+            id="vd-arrow-convoy"
+            viewBox="0 0 10 10"
+            refX="8"
+            refY="5"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#a78bfa" />
+          </marker>
           {Object.entries(RESULT_COLORS).map(([result, color]) => (
             <marker
               key={result}
@@ -250,7 +261,7 @@ export default function MapView({
               </g>
             );
           }
-          if (o.type === "support" && o.aux) {
+          if ((o.type === "support" || o.type === "convoy") && o.aux) {
             const auxPos = PROVINCES[o.aux]?.unit;
             const destPos =
               o.target && o.target !== o.aux ? PROVINCES[o.target]?.unit : auxPos;
@@ -338,10 +349,40 @@ export default function MapView({
                 y2={b.y}
                 stroke="#fbbf24"
                 strokeWidth="5"
+                strokeDasharray={o.viaConvoy ? "12 7" : undefined}
                 markerEnd="url(#vd-arrow)"
                 data-order-arrow={o.prov}
-                data-order-type="move"
+                data-order-type={o.viaConvoy ? "move-convoy" : "move"}
               />
+            );
+          }
+          if (o.type === "convoy" && o.aux && o.target) {
+            const auxTerr = terrByCode.get(o.aux);
+            const auxPos = auxTerr ? unitAnchor(auxTerr) : PROVINCES[o.aux]?.unit;
+            const destPos = PROVINCES[o.target]?.unit;
+            if (!auxPos || !destPos) return null;
+            return (
+              <g key={`o-${o.prov}`} data-order-indicator={o.prov} data-order-type="convoy">
+                <line
+                  x1={auxPos.x}
+                  y1={auxPos.y}
+                  x2={a.x}
+                  y2={a.y}
+                  stroke="#a78bfa"
+                  strokeWidth="3.5"
+                  strokeDasharray="7 6"
+                />
+                <line
+                  x1={a.x}
+                  y1={a.y}
+                  x2={destPos.x}
+                  y2={destPos.y}
+                  stroke="#a78bfa"
+                  strokeWidth="3.5"
+                  strokeDasharray="7 6"
+                  markerEnd="url(#vd-arrow-convoy)"
+                />
+              </g>
             );
           }
           if ((o.type === "support-hold" || o.type === "support-move") && o.aux) {

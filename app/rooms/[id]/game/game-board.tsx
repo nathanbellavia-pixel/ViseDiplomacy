@@ -10,6 +10,7 @@ import {
 } from "react";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import {
+  setDrawVote,
   submitAdjustments,
   submitOrders,
   submitRetreats,
@@ -17,6 +18,9 @@ import {
 } from "@/app/game-actions";
 import {
   buildSlots,
+  convoyPathFor,
+  convoyTargets,
+  fleetConvoyOptions,
   moveTargets,
   supplyCenterCount,
   supportableUnits,
@@ -55,6 +59,14 @@ function dbOrderToLocal(o: Order): LocalOrder {
     const [prov, coast] = (o.target_territory ?? "").split("/");
     return { prov: o.unit_territory, type: "move", target: prov, targetCoast: coast ?? null };
   }
+  if (o.order_type === "convoy") {
+    return {
+      prov: o.unit_territory,
+      type: "convoy",
+      aux: o.aux_territory ?? undefined,
+      target: o.target_territory ?? undefined,
+    };
+  }
   if (o.order_type === "support") {
     const hold = o.aux_territory === o.target_territory;
     return {
@@ -73,15 +85,23 @@ function describeOrder(o: LocalOrder): string {
     case "hold":
       return `${name(o.prov)} tient`;
     case "move":
-      return `${name(o.prov)} → ${name(o.target)}${o.targetCoast ? ` (côte ${o.targetCoast})` : ""}`;
+      return `${name(o.prov)} → ${name(o.target)}${o.targetCoast ? ` (côte ${o.targetCoast})` : ""}${o.viaConvoy ? " (par convoi)" : ""}`;
     case "support-hold":
       return `${name(o.prov)} soutient ${name(o.aux)} (défense)`;
     case "support-move":
       return `${name(o.prov)} soutient ${name(o.aux)} → ${name(o.target)}`;
+    case "convoy":
+      return `${name(o.prov)} convoie ${name(o.aux)} → ${name(o.target)}`;
   }
 }
 
-type Mode = "idle" | "move" | "support-pick-unit" | "support-pick-dest";
+type Mode =
+  | "idle"
+  | "move"
+  | "support-pick-unit"
+  | "support-pick-dest"
+  | "convoy-pick-army"
+  | "convoy-pick-dest";
 
 export default function GameBoard({
   initialRoom,
@@ -114,6 +134,14 @@ export default function GameBoard({
   const [selected, setSelected] = useState<string | null>(null);
   const [supportAux, setSupportAux] = useState<string | null>(null);
   const [coastChoice, setCoastChoice] = useState<{ target: string; coasts: string[] } | null>(null);
+  // army move by sea, awaiting confirmation of the proposed fleet chain
+  const [convoyProposal, setConvoyProposal] = useState<{
+    army: string;
+    target: string;
+    path: string[];
+  } | null>(null);
+  // fleet-initiated convoy: the army picked, awaiting destination
+  const [convoyAux, setConvoyAux] = useState<string | null>(null);
   const [builds, setBuilds] = useState<{ prov: string; unit: "army" | "fleet"; coast?: string | null }[]>([]);
   const [disbands, setDisbands] = useState<Set<string>>(new Set());
   const [buildPicker, setBuildPicker] = useState<string | null>(null);
@@ -179,6 +207,8 @@ export default function GameBoard({
         setRetreatPicking(null);
         setSelected(null);
         setMode("idle");
+        setConvoyProposal(null);
+        setConvoyAux(null);
       }
       setPhase(newPhase);
     }
@@ -326,7 +356,10 @@ export default function GameBoard({
       return new Set((d?.options ?? []).map((loc) => loc.split("/")[0]));
     }
     if (mode === "move" && selectedUnit) {
-      return new Set(moveTargets(selectedUnit).map((t) => t.prov));
+      const set = new Set(moveTargets(selectedUnit).map((t) => t.prov));
+      // armies can also be convoyed: propose sea-only destinations too
+      for (const p of convoyTargets(selectedUnit, allUnits)) set.add(p);
+      return set;
     }
     if (mode === "support-pick-dest" && selectedUnit && supportAux) {
       const aux = unitAt.get(supportAux);
@@ -336,11 +369,18 @@ export default function GameBoard({
       if (d.canSupportHold) set.add(supportAux);
       return set;
     }
+    if (mode === "convoy-pick-dest" && selectedUnit && convoyAux) {
+      const set = new Set(fleetConvoyOptions(selectedUnit, allUnits).coastals);
+      set.delete(convoyAux);
+      return set;
+    }
     return new Set<string>();
   }, [
     mode,
     selectedUnit,
     supportAux,
+    convoyAux,
+    allUnits,
     unitAt,
     locked,
     isSpectator,
@@ -352,8 +392,13 @@ export default function GameBoard({
   ]);
 
   const supportHighlights = useMemo(() => {
-    if (mode !== "support-pick-unit" || !selectedUnit) return new Set<string>();
-    return new Set(supportableUnits(selectedUnit, allUnits).map((u) => u.prov));
+    if (mode === "support-pick-unit" && selectedUnit) {
+      return new Set(supportableUnits(selectedUnit, allUnits).map((u) => u.prov));
+    }
+    if (mode === "convoy-pick-army" && selectedUnit) {
+      return new Set(fleetConvoyOptions(selectedUnit, allUnits).armies);
+    }
+    return new Set<string>();
   }, [mode, selectedUnit, allUnits]);
 
   const setOrder = (o: LocalOrder) => {
@@ -362,6 +407,8 @@ export default function GameBoard({
     setMode("idle");
     setSupportAux(null);
     setCoastChoice(null);
+    setConvoyProposal(null);
+    setConvoyAux(null);
   };
 
   const commitMove = (target: string, coast: string | null) =>
@@ -372,9 +419,34 @@ export default function GameBoard({
     const variants = moveTargets(selectedUnit).filter((t) => t.prov === prov);
     if (variants.length > 1) {
       setCoastChoice({ target: prov, coasts: variants.map((v) => v.coast!) });
+    } else if (variants.length === 1) {
+      commitMove(prov, variants[0].coast ?? null);
     } else {
-      commitMove(prov, variants[0]?.coast ?? null);
+      // reachable only by sea: propose a convoy chain to confirm or adjust
+      const path = convoyPathFor(selectedUnit, prov, allUnits, myNation);
+      if (path) setConvoyProposal({ army: selectedUnit.prov, target: prov, path });
     }
+  };
+
+  // confirm the proposed chain: order the army's move plus a convoy order
+  // for every one of our fleets along the route
+  const confirmConvoy = () => {
+    if (!convoyProposal) return;
+    const { army, target, path } = convoyProposal;
+    setOrders((prev) => {
+      const next = new Map(prev);
+      next.set(army, { prov: army, type: "move", target, viaConvoy: true });
+      for (const sea of path) {
+        const fleet = unitAt.get(sea);
+        if (fleet && fleet.nation === myNation) {
+          next.set(sea, { prov: sea, type: "convoy", aux: army, target });
+        }
+      }
+      return next;
+    });
+    setConvoyProposal(null);
+    setSelected(null);
+    setMode("idle");
   };
 
   const handleProvinceClick = (prov: string) => {
@@ -402,6 +474,10 @@ export default function GameBoard({
           ? { prov: selected, type: "support-hold", aux: supportAux }
           : { prov: selected, type: "support-move", aux: supportAux, target: prov }
       );
+      return;
+    }
+    if (mode === "convoy-pick-dest" && highlights.has(prov) && selected && convoyAux) {
+      setOrder({ prov: selected, type: "convoy", aux: convoyAux, target: prov });
     }
   };
 
@@ -424,7 +500,15 @@ export default function GameBoard({
       setMode("support-pick-dest");
       return;
     }
-    if ((mode === "move" || mode === "support-pick-dest") && highlights.has(prov)) {
+    if (mode === "convoy-pick-army" && supportHighlights.has(prov)) {
+      setConvoyAux(prov);
+      setMode("convoy-pick-dest");
+      return;
+    }
+    if (
+      (mode === "move" || mode === "support-pick-dest" || mode === "convoy-pick-dest") &&
+      highlights.has(prov)
+    ) {
       return handleProvinceClick(prov);
     }
     if (myUnits.some((u) => u.prov === prov)) {
@@ -437,6 +521,8 @@ export default function GameBoard({
       }
       setSupportAux(null);
       setCoastChoice(null);
+      setConvoyProposal(null);
+      setConvoyAux(null);
     }
   };
 
@@ -459,6 +545,18 @@ export default function GameBoard({
         if (phaseIdRef.current === phaseAtSubmit) setLocked(true);
         refetchPhaseAndOrders();
       }
+    });
+  };
+
+  // ----------------------------------------------------------- mutual draw
+  const activePlayers = players.filter((p) => p.nation && !p.is_eliminated);
+  // bots always consent — the decision rests with the human players
+  const drawVoteCount = activePlayers.filter((p) => p.is_bot || p.draw_vote).length;
+  const handleDrawVote = () => {
+    setError(null);
+    startTransition(async () => {
+      const result = await setDrawVote(roomId, !me.draw_vote);
+      if (result.error) setError(result.error);
     });
   };
 
@@ -513,6 +611,16 @@ export default function GameBoard({
                   {players.find((p) => p.nation === room.winner_nation)?.display_name ?? "—"}
                   {" · "}
                   {supplyCenterCount(territories, room.winner_nation)} centres de ravitaillement
+                </p>
+              </>
+            ) : room.is_draw ? (
+              <>
+                <p className="text-5xl">🤝</p>
+                <h2 className="mt-3 text-2xl font-bold text-amber-400" data-testid="draw-result">
+                  Égalité mutuelle
+                </h2>
+                <p className="mt-1 text-sm text-stone-400">
+                  Les puissances restantes se partagent la victoire.
                 </p>
               </>
             ) : (
@@ -866,6 +974,46 @@ export default function GameBoard({
                     l&apos;unité soutenue pour une défense).
                   </p>
                 )}
+                {mode === "convoy-pick-army" && (
+                  <p className="mt-1 text-violet-400">Cliquez l&apos;armée à convoyer.</p>
+                )}
+                {mode === "convoy-pick-dest" && convoyAux && (
+                  <p className="mt-1 text-violet-400">
+                    Convoi de {PROVINCES[convoyAux].name} : cliquez la côte de destination.
+                  </p>
+                )}
+                {convoyProposal && (
+                  <div
+                    className="mt-2 rounded-lg border border-violet-700/60 bg-violet-950/40 p-2"
+                    data-testid="convoy-proposal"
+                  >
+                    <p className="text-xs font-semibold text-violet-300">
+                      Convoi proposé :{" "}
+                      {[convoyProposal.army, ...convoyProposal.path, convoyProposal.target]
+                        .map((p) => PROVINCES[p]?.name ?? p)
+                        .join(" → ")}
+                    </p>
+                    <p className="mt-1 text-[11px] text-stone-400">
+                      Vos flottes du trajet recevront l&apos;ordre de convoyer. Les flottes
+                      étrangères devront convoyer de leur côté.
+                    </p>
+                    <div className="mt-1.5 flex gap-2">
+                      <button
+                        onClick={confirmConvoy}
+                        data-testid="confirm-convoy"
+                        className="rounded bg-violet-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-violet-500"
+                      >
+                        Confirmer le convoi
+                      </button>
+                      <button
+                        onClick={() => setConvoyProposal(null)}
+                        className="rounded px-2.5 py-1 text-xs text-stone-400 hover:text-stone-200"
+                      >
+                        Ajuster
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {coastChoice && (
                   <div className="mt-2 flex gap-2">
                     {coastChoice.coasts.map((c) => (
@@ -887,7 +1035,7 @@ export default function GameBoard({
                   >
                     Tenir
                   </button>
-                  {mode !== "support-pick-unit" && mode !== "support-pick-dest" && (
+                  {mode === "move" && (
                     <button
                       onClick={() => setMode("support-pick-unit")}
                       data-testid="order-support"
@@ -896,12 +1044,25 @@ export default function GameBoard({
                       Soutenir
                     </button>
                   )}
+                  {mode === "move" &&
+                    selectedUnit.unit === "fleet" &&
+                    PROVINCES[selectedUnit.prov]?.type === "water" && (
+                      <button
+                        onClick={() => setMode("convoy-pick-army")}
+                        data-testid="order-convoy"
+                        className="rounded bg-stone-700 px-3 py-1 text-xs font-semibold hover:bg-violet-600 hover:text-white"
+                      >
+                        Convoyer
+                      </button>
+                    )}
                   <button
                     onClick={() => {
                       setSelected(null);
                       setMode("idle");
                       setSupportAux(null);
                       setCoastChoice(null);
+                      setConvoyProposal(null);
+                      setConvoyAux(null);
                     }}
                     className="rounded px-3 py-1 text-xs text-stone-400 hover:text-stone-200"
                   >
@@ -958,6 +1119,31 @@ export default function GameBoard({
                 Valider les ordres ({orders.size}/{myUnits.length})
               </button>
             )}
+          </div>
+        )}
+
+        {/* -------------------------------------------------- mutual draw */}
+        {!isFinished && !isSpectator && (
+          <div className="glass p-4" data-testid="draw-panel">
+            <h2 className="mb-1 font-semibold text-stone-300">Égalité mutuelle</h2>
+            <p className="text-xs text-stone-400">
+              La partie se termine en égalité partagée si toutes les puissances
+              encore en lice acceptent ({drawVoteCount}/{activePlayers.length}{" "}
+              acceptation{drawVoteCount > 1 ? "s" : ""}).
+            </p>
+            <button
+              onClick={handleDrawVote}
+              disabled={isPending}
+              data-testid="draw-vote"
+              data-my-vote={me.draw_vote ? "yes" : "no"}
+              className={`mt-2 w-full rounded-lg py-2 text-sm font-semibold transition disabled:opacity-50 ${
+                me.draw_vote
+                  ? "bg-stone-700 text-stone-200 hover:bg-stone-600"
+                  : "border border-amber-600/50 bg-amber-950/40 text-amber-400 hover:bg-amber-900/40"
+              }`}
+            >
+              {me.draw_vote ? "Retirer mon acceptation" : "Proposer / accepter l'égalité"}
+            </button>
           </div>
         )}
       </aside>

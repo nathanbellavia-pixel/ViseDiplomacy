@@ -17,6 +17,7 @@ const A = (prov: string, nation: string): AdjUnit => ({ prov, nation, unit: "arm
 const F = (prov: string, nation: string, coast: string | null = null): AdjUnit => ({ prov, nation, unit: "fleet", coast });
 const mv = (prov: string, target: string, targetCoast: string | null = null): AdjOrder => ({ type: "move", prov, target, targetCoast });
 const sup = (prov: string, aux: string, target: string): AdjOrder => ({ type: "support", prov, aux, target });
+const cvy = (prov: string, aux: string, target: string): AdjOrder => ({ type: "convoy", prov, aux, target });
 const hold = (prov: string): AdjOrder => ({ type: "hold", prov });
 
 // 1. two equal attacks on an empty province bounce (DATC 6.A-style standoff)
@@ -194,6 +195,108 @@ const hold = (prov: string): AdjOrder => ({ type: "hold", prov });
   check("early support is valid", r.results.get("hol"), "success");
   check("supported attack lands", r.results.get("pic"), "success");
   check("defender dislodged", r.results.get("bel"), "dislodged");
+}
+
+// 14. convoy across one sea province (London → Brest via the Channel)
+{
+  console.log("2-province convoy");
+  const r = adjudicate(
+    [A("lon", "Angleterre"), F("eng", "Angleterre")],
+    [mv("lon", "bre"), cvy("eng", "lon", "bre")]
+  );
+  check("army lands by sea", r.moved.get("lon"), { to: "bre", coast: null });
+  check("move flagged as convoyed", r.viaConvoy.has("lon"), true);
+  check("convoying fleet ok", r.results.get("eng"), "success");
+}
+
+// 15. chained convoy through three sea provinces (Liverpool → Tunis)
+{
+  console.log("3-fleet convoy chain");
+  const r = adjudicate(
+    [
+      A("lvp", "Angleterre"),
+      F("nao", "Angleterre"),
+      F("mao", "Angleterre"),
+      F("wes", "France"), // foreign fleets may take part in the chain
+    ],
+    [
+      mv("lvp", "tun"),
+      cvy("nao", "lvp", "tun"),
+      cvy("mao", "lvp", "tun"),
+      cvy("wes", "lvp", "tun"),
+    ]
+  );
+  check("army crosses three seas", r.moved.get("lvp"), { to: "tun", coast: null });
+  check("convoyed flag", r.viaConvoy.has("lvp"), true);
+}
+
+// 16. convoy without orders from the fleets is an invalid move
+{
+  console.log("convoy needs convoy orders");
+  const r = adjudicate(
+    [A("lon", "Angleterre"), F("eng", "Angleterre")],
+    [mv("lon", "bre"), hold("eng")]
+  );
+  check("no convoy order: move invalid", r.results.get("lon"), "invalid");
+}
+
+// 17. dislodging a convoying fleet disrupts the convoy
+{
+  console.log("convoy disruption");
+  const r = adjudicate(
+    [
+      A("lon", "Angleterre"), F("eng", "Angleterre"),
+      F("mao", "France"), F("iri", "France"),
+    ],
+    [
+      mv("lon", "bre"), cvy("eng", "lon", "bre"),
+      mv("mao", "eng"), sup("iri", "mao", "eng"),
+    ]
+  );
+  check("convoying fleet dislodged", r.results.get("eng"), "dislodged");
+  check("convoyed move fails", r.results.get("lon"), "bounced");
+  check("army stays home", r.moved.has("lon"), false);
+  check("attacker enters the sea", r.moved.get("mao"), { to: "eng", coast: null });
+}
+
+// 18. a convoyed attack still dislodges with support
+{
+  console.log("supported convoyed attack");
+  const r = adjudicate(
+    [
+      A("lon", "Angleterre"), F("eng", "Angleterre"), F("pic", "Angleterre"),
+      A("bre", "France"),
+    ],
+    [
+      mv("lon", "bre"), cvy("eng", "lon", "bre"), sup("pic", "lon", "bre"),
+      hold("bre"),
+    ]
+  );
+  check("convoyed attack lands", r.moved.get("lon"), { to: "bre", coast: null });
+  check("defender dislodged", r.results.get("bre"), "dislodged");
+}
+
+// 19. multi-coast fleet moves must name a coast on split-coast provinces
+{
+  console.log("multi-coast moves (Spain, Bulgaria, St-Petersburg)");
+  const spa = adjudicate([F("mao", "France")], [mv("mao", "spa", "nc")]);
+  check("Spain north coast", spa.moved.get("mao"), { to: "spa", coast: "nc" });
+  const bul = adjudicate([F("con", "Empire Ottoman")], [mv("con", "bul", "ec")]);
+  check("Bulgaria east coast", bul.moved.get("con"), { to: "bul", coast: "ec" });
+  const stp = adjudicate([F("bot", "Russie")], [mv("bot", "stp", "sc")]);
+  check("St-Petersburg south coast", stp.moved.get("bot"), { to: "stp", coast: "sc" });
+  const missing = adjudicate([F("mao", "France")], [mv("mao", "spa")]);
+  check("coast required on split-coast", missing.results.get("mao"), "invalid");
+  const wrong = adjudicate([F("mao", "France")], [mv("mao", "spa", "ec")]);
+  check("nonexistent coast rejected", wrong.results.get("mao"), "invalid");
+}
+
+// 20. retreats: never back into the attacker's origin province
+{
+  console.log("illegal retreat back to attacker origin");
+  const options = validRetreats(A("bur", "Allemagne"), "par", new Set(), new Set());
+  check("attacker origin excluded", options.includes("par"), false);
+  check("other neighbours open", options.includes("gas"), true);
 }
 
 if (failures > 0) {

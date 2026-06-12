@@ -38,6 +38,7 @@ export interface Room {
   started_at: string | null;
   finished_at: string | null;
   winner_nation: Nation | null;
+  is_draw: boolean;
 }
 
 export interface RoomPlayer {
@@ -51,6 +52,7 @@ export interface RoomPlayer {
   is_bot: boolean;
   is_alive: boolean;
   is_eliminated: boolean;
+  draw_vote: boolean;
   joined_at: string;
 }
 

@@ -1,4 +1,4 @@
-// Server-side Diplomacy adjudicator — DATC-subset, no convoys.
+// Server-side Diplomacy adjudicator — DATC subset, convoys included.
 //
 // Resolution uses bounded fixpoint iteration (min strength counts only
 // confirmed supports, max strength also counts undecided ones), so support
@@ -6,10 +6,17 @@
 // assumptions. Whatever survives the fixpoint is a rotation cycle, which
 // succeeds per the rulebook.
 //
+// Convoys: an army may move to any coastal province reachable through a
+// chain of fleets in sea provinces whose convoy orders match the move.
+// Disruption is handled by an outer loop: after each full adjudication,
+// any convoyed move whose every path lost a fleet to dislodgement is marked
+// broken (the army stays put) and the board is re-adjudicated. The broken
+// set only grows, so the loop terminates.
+//
 // Deliberately alias-free (only ./map-data) so node can run the test suite
 // without the Next.js toolchain.
 
-import { ARMY_ADJ, FLEET_ADJ } from "./map-data";
+import { ARMY_ADJ, FLEET_ADJ, PROVINCES } from "./map-data.ts";
 
 export interface AdjUnit {
   prov: string;
@@ -20,9 +27,18 @@ export interface AdjUnit {
 
 export type AdjOrder =
   | { type: "hold"; prov: string }
-  | { type: "move"; prov: string; target: string; targetCoast?: string | null }
+  | {
+      type: "move";
+      prov: string;
+      target: string;
+      targetCoast?: string | null;
+      /** Explicitly take the sea route even if a land route exists. */
+      viaConvoy?: boolean;
+    }
   // aux === target means support-hold
-  | { type: "support"; prov: string; aux: string; target: string };
+  | { type: "support"; prov: string; aux: string; target: string }
+  // fleet at `prov` carries the army at `aux` toward `target`
+  | { type: "convoy"; prov: string; aux: string; target: string };
 
 export type AdjResult = "success" | "bounced" | "cut" | "dislodged" | "invalid";
 
@@ -35,6 +51,9 @@ export interface Adjudication {
   dislodged: Map<string, string>;
   /** Provinces left vacant by a standoff — closed to retreats this turn. */
   contested: Set<string>;
+  /** Origins of moves that went by convoy (a convoyed attacker does not
+   *  block retreats to its origin province). */
+  viaConvoy: Set<string>;
 }
 
 function fleetLoc(u: AdjUnit): string {
@@ -52,6 +71,36 @@ function canMove(u: AdjUnit, target: string, coast: string | null): boolean {
   return coast ? locs.includes(`${target}/${coast}`) : locs.includes(target);
 }
 
+// ----------------------------------------------------------------- convoys
+
+function seaTouches(sea: string, prov: string): boolean {
+  return (FLEET_ADJ[sea] ?? []).some((loc) => loc.split("/")[0] === prov);
+}
+
+/**
+ * Is there a chain of convoying fleets (a subset of `fleets`, each in a sea
+ * province) linking `from` to `to`? Sea-to-sea steps follow fleet adjacency.
+ */
+export function convoyPathExists(
+  from: string,
+  to: string,
+  fleets: Set<string>
+): boolean {
+  const queue = [...fleets].filter((s) => seaTouches(s, from));
+  const seen = new Set(queue);
+  while (queue.length > 0) {
+    const sea = queue.shift()!;
+    if (seaTouches(sea, to)) return true;
+    for (const next of FLEET_ADJ[sea] ?? []) {
+      if (fleets.has(next) && !seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return false;
+}
+
 type Tri = "undecided" | "yes" | "no";
 
 interface MoveCtx {
@@ -59,6 +108,7 @@ interface MoveCtx {
   target: string;
   coast: string | null;
   nation: string;
+  viaConvoy: boolean;
   state: Tri; // does the move succeed?
 }
 
@@ -70,7 +120,37 @@ interface SupportCtx {
   state: Tri; // does the support hold (not cut)?
 }
 
+interface PassResult extends Adjudication {
+  /** Convoyed moves of this pass: origin -> { target, convoying fleets }. */
+  convoyRoutes: Map<string, { target: string; fleets: Set<string> }>;
+}
+
 export function adjudicate(units: AdjUnit[], orders: AdjOrder[]): Adjudication {
+  // Outer loop: re-adjudicate whenever a convoy turns out to be disrupted.
+  const broken = new Set<string>();
+  let pass = adjudicatePass(units, orders, broken);
+  for (let guard = 0; guard <= units.length; guard++) {
+    let changed = false;
+    for (const [prov, route] of pass.convoyRoutes) {
+      const survivors = new Set(
+        [...route.fleets].filter((f) => !pass.dislodged.has(f))
+      );
+      if (!convoyPathExists(prov, route.target, survivors)) {
+        broken.add(prov);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+    pass = adjudicatePass(units, orders, broken);
+  }
+  return pass;
+}
+
+function adjudicatePass(
+  units: AdjUnit[],
+  orders: AdjOrder[],
+  broken: Set<string>
+): PassResult {
   const unitAt = new Map(units.map((u) => [u.prov, u]));
   const results = new Map<string, AdjResult>();
   const orderAt = new Map<string, AdjOrder>();
@@ -83,25 +163,75 @@ export function adjudicate(units: AdjUnit[], orders: AdjOrder[]): Adjudication {
   }
 
   // ----------------------------------------------------------- validation
-  // moves first: support validity depends on the supported unit's move
-  const moves = new Map<string, MoveCtx>();
-  const supports = new Map<string, SupportCtx>();
+  // 1. raw move intents (needed to match convoy orders)
+  const intents = new Map<
+    string,
+    { target: string; coast: string | null; viaConvoy: boolean }
+  >();
   for (const u of units) {
     const o = orderAt.get(u.prov)!;
-    if (o.type !== "move") continue;
-    const coast = o.targetCoast ?? null;
-    if (o.target !== u.prov && canMove(u, o.target, coast)) {
-      moves.set(u.prov, {
-        prov: u.prov,
-        target: o.target,
-        coast,
-        nation: u.nation,
-        state: "undecided",
-      });
+    if (o.type !== "move" || o.target === u.prov) continue;
+    intents.set(u.prov, {
+      target: o.target,
+      coast: o.targetCoast ?? null,
+      viaConvoy: o.viaConvoy === true,
+    });
+  }
+
+  // 2. convoy orders: a fleet in a sea province carrying a matching army move
+  const convoyFleets = new Map<string, Set<string>>(); // "from>to" -> fleets
+  for (const u of units) {
+    const o = orderAt.get(u.prov)!;
+    if (o.type !== "convoy") continue;
+    const army = unitAt.get(o.aux);
+    const matches =
+      u.unit === "fleet" &&
+      PROVINCES[u.prov]?.type === "water" &&
+      army?.unit === "army" &&
+      intents.get(o.aux)?.target === o.target;
+    if (matches) {
+      const key = `${o.aux}>${o.target}`;
+      if (!convoyFleets.has(key)) convoyFleets.set(key, new Set());
+      convoyFleets.get(key)!.add(u.prov);
     } else {
-      results.set(u.prov, "invalid"); // stays and defends as a hold
+      results.set(u.prov, "invalid"); // mismatched convoy is void
     }
   }
+
+  // 3. moves: direct, convoyed, or invalid
+  const moves = new Map<string, MoveCtx>();
+  const convoyRoutes = new Map<string, { target: string; fleets: Set<string> }>();
+  for (const [prov, it] of intents) {
+    const u = unitAt.get(prov)!;
+    if (broken.has(prov)) {
+      // convoy disrupted in a previous pass: the move fails outright
+      results.set(prov, "bounced");
+      continue;
+    }
+    const direct = canMove(u, it.target, it.coast);
+    const fleets = convoyFleets.get(`${prov}>${it.target}`) ?? new Set<string>();
+    const convoyed =
+      u.unit === "army" &&
+      fleets.size > 0 &&
+      convoyPathExists(prov, it.target, fleets) &&
+      (it.viaConvoy || !direct);
+    if (convoyed || direct) {
+      moves.set(prov, {
+        prov,
+        target: it.target,
+        coast: convoyed ? null : it.coast,
+        nation: u.nation,
+        viaConvoy: convoyed,
+        state: "undecided",
+      });
+      if (convoyed) convoyRoutes.set(prov, { target: it.target, fleets });
+    } else {
+      results.set(prov, "invalid"); // stays and defends as a hold
+    }
+  }
+
+  // 4. supports (validity depends on the supported unit's adjudicable move)
+  const supports = new Map<string, SupportCtx>();
   for (const u of units) {
     const o = orderAt.get(u.prov)!;
     if (o.type === "support") {
@@ -209,7 +339,10 @@ export function adjudicate(units: AdjUnit[], orders: AdjOrder[]): Adjudication {
       let rivalMax = 0;
       for (const r of rivals) {
         const counter = moves.get(r.target);
-        const h2h = counter && counter.target === r.prov ? counter : undefined;
+        const h2h =
+          counter && counter.target === r.prov && !r.viaConvoy && !counter.viaConvoy
+            ? counter
+            : undefined;
         if (h2h?.state === "yes") continue; // rival dislodged by the h2h winner
         const rs = moveStrength(r);
         // if the h2h is still open the rival may end up preventing nothing
@@ -219,7 +352,10 @@ export function adjudicate(units: AdjUnit[], orders: AdjOrder[]): Adjudication {
 
       const defender = unitAt.get(m.target);
       const defenderMove = defender ? moves.get(defender.prov) : undefined;
-      const headToHead = defenderMove ? defenderMove.target === m.prov : false;
+      // convoyed units pass each other at sea: no head-to-head either way
+      const headToHead = defenderMove
+        ? defenderMove.target === m.prov && !m.viaConvoy && !defenderMove.viaConvoy
+        : false;
 
       // defense bounds
       let defMin = 0;
@@ -291,11 +427,13 @@ export function adjudicate(units: AdjUnit[], orders: AdjOrder[]): Adjudication {
   const moved = new Map<string, { to: string; coast: string | null }>();
   const dislodged = new Map<string, string>();
   const contested = new Set<string>();
+  const viaConvoy = new Set<string>();
 
   for (const m of moves.values()) {
     if (m.state === "yes") {
       moved.set(m.prov, { to: m.target, coast: m.coast });
       results.set(m.prov, "success");
+      if (m.viaConvoy) viaConvoy.add(m.prov);
     } else if (!results.has(m.prov)) {
       results.set(m.prov, "bounced");
     }
@@ -326,17 +464,18 @@ export function adjudicate(units: AdjUnit[], orders: AdjOrder[]): Adjudication {
     results.set(s.prov, s.state === "yes" ? "success" : "cut");
   }
 
-  // holds succeed unless dislodged; keep 'invalid' marks
+  // holds and convoying fleets succeed unless dislodged; keep 'invalid' marks
   for (const u of units) {
     if (!results.has(u.prov)) results.set(u.prov, "success");
   }
 
-  return { results, moved, dislodged, contested };
+  return { results, moved, dislodged, contested, viaConvoy, convoyRoutes };
 }
 
 /**
  * Valid retreat destinations for a dislodged unit: adjacent per unit type,
- * empty after resolution, not the attacker's origin, not a standoff province.
+ * empty after resolution, not the attacker's origin (unless the attack came
+ * by convoy — pass "" then), not a standoff province.
  * Returns fleet destinations as "prov" or "prov/coast" entries.
  */
 export function validRetreats(

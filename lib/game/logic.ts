@@ -72,6 +72,139 @@ export function supportDestinations(
   };
 }
 
+// --------------------------------------------------------------- convoys
+
+const seaTouches = (sea: string, prov: string) =>
+  (FLEET_ADJ[sea] ?? []).some((l) => l.split("/")[0] === prov);
+
+// Sea provinces currently holding a fleet (only those can convoy).
+function fleetSeas(units: BoardUnit[]): Set<string> {
+  return new Set(
+    units
+      .filter((u) => u.unit === "fleet" && PROVINCES[u.prov]?.type === "water")
+      .map((u) => u.prov)
+  );
+}
+
+/**
+ * Coastal provinces an army could reach by convoy through the fleets
+ * currently at sea (any nation — foreign fleets may convoy too).
+ */
+export function convoyTargets(army: BoardUnit, units: BoardUnit[]): Set<string> {
+  const out = new Set<string>();
+  if (army.unit !== "army") return out;
+  const fleets = fleetSeas(units);
+  const queue = [...fleets].filter((s) => seaTouches(s, army.prov));
+  const seen = new Set(queue);
+  while (queue.length > 0) {
+    const sea = queue.shift()!;
+    for (const loc of FLEET_ADJ[sea] ?? []) {
+      const prov = loc.split("/")[0];
+      if (fleets.has(loc) && !seen.has(loc)) {
+        seen.add(loc);
+        queue.push(loc);
+      } else if (PROVINCES[prov]?.type === "coast" && prov !== army.prov) {
+        out.add(prov);
+      }
+    }
+  }
+  return out;
+}
+
+function bfsConvoyPath(from: string, to: string, fleets: Set<string>): string[] | null {
+  const parent = new Map<string, string | null>();
+  const queue: string[] = [];
+  for (const s of fleets) {
+    if (seaTouches(s, from)) {
+      parent.set(s, null);
+      queue.push(s);
+    }
+  }
+  while (queue.length > 0) {
+    const sea = queue.shift()!;
+    if (seaTouches(sea, to)) {
+      const path = [sea];
+      let p = parent.get(sea) ?? null;
+      while (p) {
+        path.unshift(p);
+        p = parent.get(p) ?? null;
+      }
+      return path;
+    }
+    for (const loc of FLEET_ADJ[sea] ?? []) {
+      if (fleets.has(loc) && !parent.has(loc)) {
+        parent.set(loc, sea);
+        queue.push(loc);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Shortest convoy chain (list of sea provinces) carrying `army` to `target`,
+ * preferring a route made only of `nation`'s own fleets — those are the ones
+ * the player can actually order to convoy.
+ */
+export function convoyPathFor(
+  army: BoardUnit,
+  target: string,
+  units: BoardUnit[],
+  nation: string | null
+): string[] | null {
+  if (army.unit !== "army") return null;
+  if (nation) {
+    const own = new Set(
+      units
+        .filter(
+          (u) =>
+            u.unit === "fleet" &&
+            u.nation === nation &&
+            PROVINCES[u.prov]?.type === "water"
+        )
+        .map((u) => u.prov)
+    );
+    const ownPath = bfsConvoyPath(army.prov, target, own);
+    if (ownPath) return ownPath;
+  }
+  return bfsConvoyPath(army.prov, target, fleetSeas(units));
+}
+
+/**
+ * What a fleet at sea can convoy: armies on coasts of its connected group of
+ * fleet-occupied sea provinces, and the coastal destinations of that group.
+ */
+export function fleetConvoyOptions(
+  fleet: BoardUnit,
+  units: BoardUnit[]
+): { armies: string[]; coastals: Set<string> } {
+  if (PROVINCES[fleet.prov]?.type !== "water")
+    return { armies: [], coastals: new Set() };
+  const fleets = fleetSeas(units);
+  const queue = [fleet.prov];
+  const component = new Set(queue);
+  while (queue.length > 0) {
+    const sea = queue.shift()!;
+    for (const loc of FLEET_ADJ[sea] ?? []) {
+      if (fleets.has(loc) && !component.has(loc)) {
+        component.add(loc);
+        queue.push(loc);
+      }
+    }
+  }
+  const coastals = new Set<string>();
+  for (const sea of component) {
+    for (const loc of FLEET_ADJ[sea] ?? []) {
+      const prov = loc.split("/")[0];
+      if (PROVINCES[prov]?.type === "coast") coastals.add(prov);
+    }
+  }
+  const armies = units
+    .filter((u) => u.unit === "army" && coastals.has(u.prov))
+    .map((u) => u.prov);
+  return { armies, coastals };
+}
+
 // ----------------------------------------------------------- adjustments
 export function supplyCenterCount(territories: Territory[], nation: string): number {
   return territories.filter((t) => t.is_supply_center && t.owner_nation === nation).length;

@@ -32,6 +32,7 @@ import { defaultBot, type BotBoard } from "./bots";
 import { PROVINCES } from "./map-data";
 import { HOME_SCS } from "./setup";
 import { buildSlots, supplyCenterCount, unitCount, unitsOnBoard } from "./logic";
+import { findVictor, planBuilds, planDisbands, planRetreats } from "./phase-logic";
 
 const name = (p: string | null | undefined) =>
   p ? (PROVINCES[p.split("/")[0]]?.name ?? p) : "?";
@@ -373,13 +374,18 @@ async function advanceAfter(ctx: Ctx, territoriesNow: Territory[]) {
     }
   }
 
-  // 3. victory check (17 of 34 supply centers)
-  for (const p of ctx.players) {
-    if (!p.nation || p.is_eliminated) continue;
-    if (supplyCenterCount(territoriesNow, p.nation) >= 17) {
-      await endGame(room, p.nation);
-      return;
-    }
+  // 3. victory check (absolute majority: 18 of 34 supply centers)
+  const victor = findVictor(
+    ctx.players
+      .filter((p) => p.nation && !p.is_eliminated)
+      .map((p) => ({
+        nation: p.nation!,
+        sc: supplyCenterCount(territoriesNow, p.nation!),
+      }))
+  );
+  if (victor) {
+    await endGame(room, victor as Nation);
+    return;
   }
 
   if (phase.season === "spring") {
@@ -401,13 +407,14 @@ async function advanceAfter(ctx: Ctx, territoriesNow: Territory[]) {
   });
 }
 
-async function endGame(room: Room, winner: Nation | null) {
+async function endGame(room: Room, winner: Nation | null, isDraw = false) {
   const supabase = getSupabaseServer();
   await supabase
     .from("rooms")
     .update({
       status: "finished",
       winner_nation: winner,
+      is_draw: isDraw,
       finished_at: new Date().toISOString(),
     })
     .eq("id", room.id);
@@ -434,6 +441,13 @@ async function resolveMovement(ctx: Ctx) {
     if (o.order_type === "move" && o.target_territory) {
       const [target, coast] = o.target_territory.split("/");
       adjOrders.push({ type: "move", prov: o.unit_territory, target, targetCoast: coast ?? null });
+    } else if (o.order_type === "convoy" && o.aux_territory && o.target_territory) {
+      adjOrders.push({
+        type: "convoy",
+        prov: o.unit_territory,
+        aux: o.aux_territory,
+        target: o.target_territory,
+      });
     } else if (o.order_type === "support" && o.aux_territory && o.target_territory) {
       adjOrders.push({
         type: "support",
@@ -496,13 +510,15 @@ async function resolveMovement(ctx: Ctx) {
   const dislodged: DislodgedUnit[] = [...adj.dislodged.entries()].map(
     ([prov, attackerFrom]) => {
       const u = unitByProv.get(prov)!;
+      // a convoyed attacker arrived by sea: its origin stays open to retreats
+      const blockedOrigin = adj.viaConvoy.has(attackerFrom) ? "" : attackerFrom;
       return {
         prov,
         nation: u.nation as Nation,
         unit: u.unit,
         coast: u.coast,
         attackerFrom,
-        options: validRetreats(u, attackerFrom, occupiedAfter, adj.contested),
+        options: validRetreats(u, blockedOrigin, occupiedAfter, adj.contested),
       };
     }
   );
@@ -522,7 +538,9 @@ async function resolveMovement(ctx: Ctx) {
         ? `${name(o.prov)} → ${name(o.target)}`
         : o.type === "support"
           ? `${name(o.prov)} soutient ${name(o.aux)}${o.aux !== o.target ? ` → ${name(o.target)}` : ""}`
-          : `${name(o.prov)} tient`;
+          : o.type === "convoy"
+            ? `${name(o.prov)} convoie ${name(o.aux)} → ${name(o.target)}`
+            : `${name(o.prov)} tient`;
     return `${o.nation} : ${what} — ${RESULT_TEXT[o.result as AdjResult] ?? o.result}`;
   });
   for (const d of dislodged) {
@@ -557,34 +575,22 @@ async function resolveRetreat(ctx: Ctx) {
   const dislodged = phase.summary?.dislodged ?? [];
   const orderByProv = new Map(ctx.orders.map((o) => [o.unit_territory, o]));
 
-  // destination -> retreating provinces (two retreats to one spot disband both)
-  const wanted = new Map<string, string[]>();
-  for (const d of dislodged) {
-    const o = orderByProv.get(d.prov);
-    const to =
-      o?.order_type === "retreat" && o.target_territory &&
-      d.options.includes(o.target_territory)
-        ? o.target_territory
-        : null;
-    if (to) {
-      const prov = to.split("/")[0];
-      wanted.set(prov, [...(wanted.get(prov) ?? []), d.prov]);
-    }
-  }
+  const wanted = new Map<string, string | null>(
+    dislodged.map((d) => {
+      const o = orderByProv.get(d.prov);
+      return [d.prov, o?.order_type === "retreat" ? o.target_territory : null];
+    })
+  );
+  const plan = planRetreats(dislodged, wanted);
 
   const events: string[] = [];
   const summaryOrders: SummaryOrder[] = [];
   for (const d of dislodged) {
     const o = orderByProv.get(d.prov);
-    const target =
-      o?.order_type === "retreat" && o.target_territory && d.options.includes(o.target_territory)
-        ? o.target_territory
-        : null;
-    const destProv = target?.split("/")[0];
-    const collided = destProv ? (wanted.get(destProv) ?? []).length > 1 : false;
+    const target = plan.moves.get(d.prov) ?? null;
 
     let result: string;
-    if (target && !collided) {
+    if (target) {
       const [prov, coast] = target.split("/");
       await setTerritoryUnit(room.id, prov, {
         nation: d.nation,
@@ -595,9 +601,10 @@ async function resolveRetreat(ctx: Ctx) {
       events.push(`${d.nation} : retraite ${name(d.prov)} → ${name(target)}`);
     } else {
       result = "disbanded";
+      const askedFor = wanted.get(d.prov);
       events.push(
-        collided
-          ? `${d.nation} : retraite vers ${name(destProv!)} en collision — unité dissoute`
+        askedFor && d.options.includes(askedFor)
+          ? `${d.nation} : retraite vers ${name(askedFor)} en collision — unité dissoute`
           : `${d.nation} : unité de ${name(d.prov)} dissoute`
       );
     }
@@ -642,25 +649,31 @@ async function resolveAdjustment(ctx: Ctx) {
 
     if (delta > 0) {
       const slots = buildSlots(terr, nation, HOME_SCS[nation]);
-      let built = 0;
-      for (const o of mine) {
-        if (o.order_type !== "build" || built >= delta) continue;
-        const slot = slots.find((s) => s.prov === o.unit_territory);
-        const already = terr.find((t) => t.code === o.unit_territory)?.occupant_nation;
-        const ok = slot && !already;
-        if (ok) {
-          const coast = o.target_territory?.split("/")[1] ?? null;
-          await setTerritoryUnit(room.id, o.unit_territory, {
-            nation,
-            type: o.unit_type,
-            coast,
-          });
-          const t = terr.find((x) => x.code === o.unit_territory)!;
-          t.occupant_nation = nation;
-          t.unit_type = o.unit_type;
-          built++;
-          events.push(`${nation} : ${o.unit_type === "army" ? "armée" : "flotte"} construite à ${name(o.unit_territory)}`);
-        }
+      const freeHomeScs = new Set(slots.map((s) => s.prov));
+      const buildOrders = mine.filter((o) => o.order_type === "build");
+      const accepted = planBuilds(
+        buildOrders.map((o) => ({
+          prov: o.unit_territory,
+          unit: o.unit_type,
+          coast: o.target_territory?.split("/")[1] ?? null,
+        })),
+        delta,
+        freeHomeScs
+      );
+      const acceptedProvs = new Set(accepted.map((b) => b.prov));
+      for (const b of accepted) {
+        await setTerritoryUnit(room.id, b.prov, {
+          nation,
+          type: b.unit,
+          coast: b.coast,
+        });
+        const t = terr.find((x) => x.code === b.prov)!;
+        t.occupant_nation = nation;
+        t.unit_type = b.unit;
+        events.push(`${nation} : ${b.unit === "army" ? "armée" : "flotte"} construite à ${name(b.prov)}`);
+      }
+      for (const o of buildOrders) {
+        const ok = acceptedProvs.has(o.unit_territory);
         await supabase
           .from("orders")
           .update({ status: "resolved", result: ok ? "success" : "invalid" })
@@ -676,17 +689,15 @@ async function resolveAdjustment(ctx: Ctx) {
         });
       }
     } else {
-      // collect requested disbands, then force the remainder
+      // requested disbands first, then force the remainder
       const myUnits = unitsOnBoard(terr).filter((u) => u.nation === nation);
-      const requested = mine
-        .filter((o) => o.order_type === "disband")
-        .map((o) => o.unit_territory)
-        .filter((prov) => myUnits.some((u) => u.prov === prov));
       const board = botBoard(nation, terr);
-      const forced = defaultBot
-        .adjustmentOrders(board, delta, [])
-        .disbands.filter((prov) => !requested.includes(prov));
-      const toDisband = [...new Set([...requested, ...forced])].slice(0, -delta);
+      const toDisband = planDisbands(
+        -delta,
+        mine.filter((o) => o.order_type === "disband").map((o) => o.unit_territory),
+        defaultBot.adjustmentOrders(board, delta, []).disbands,
+        new Set(myUnits.map((u) => u.prov))
+      );
       for (const prov of toDisband) {
         await setTerritoryUnit(room.id, prov, null);
         const t = terr.find((x) => x.code === prov)!;
@@ -715,11 +726,15 @@ async function resolveAdjustment(ctx: Ctx) {
   await finishPhase(phase, { events, orders: summaryOrders, dislodged: [] });
 
   // victory can also be detected here ("next resolution check")
-  for (const p of nations) {
-    if (supplyCenterCount(terr, p.nation!) >= 17) {
-      await endGame(room, p.nation!);
-      return;
-    }
+  const victor = findVictor(
+    nations.map((p) => ({
+      nation: p.nation!,
+      sc: supplyCenterCount(terr, p.nation!),
+    }))
+  );
+  if (victor) {
+    await endGame(room, victor as Nation);
+    return;
   }
 
   // game length cap: total_phases counts movement phases

@@ -5,7 +5,7 @@ export function CornerSparkle() {
     <svg
       aria-hidden
       viewBox="0 0 64 64"
-      className="pointer-events-none fixed bottom-5 right-5 z-0 h-10 w-10 text-amber-500/50"
+      className="pointer-events-none fixed bottom-5 right-5 -z-10 h-10 w-10 text-amber-500/50"
       fill="currentColor"
     >
       <path d="M32 4l5 19 19 5-19 5-5 19-5-19-19-5 19-5z" />
@@ -20,7 +20,7 @@ export function WorldMapBackdrop() {
     <svg
       aria-hidden
       viewBox="0 0 520 600"
-      className="pointer-events-none fixed left-0 top-16 z-0 h-[85vh] w-auto max-w-[55vw] opacity-10"
+      className="pointer-events-none fixed left-0 top-16 -z-10 h-[85vh] w-auto max-w-[55vw] opacity-10"
       fill="none"
       stroke="#f8fafc"
       strokeWidth="1.5"

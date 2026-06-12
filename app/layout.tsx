@@ -28,7 +28,9 @@ export default function RootLayout({
               </SignedIn>
             </div>
           </header>
-          <main className="relative z-10 mx-auto max-w-5xl px-4 py-8">{children}</main>
+          {/* no z-index here: fixed overlays inside (chat, info panel, victory
+              screen) must stack in the root context, above the sticky header */}
+          <main className="relative mx-auto max-w-5xl px-4 py-8">{children}</main>
           <CornerSparkle />
         </body>
       </html>

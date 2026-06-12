@@ -189,7 +189,11 @@ try {
 
   // results are broadcast: A sees the bounce arrows without reloading
   await a.locator('[data-result-arrow="par"][data-result="bounced"]').waitFor({ timeout: 20000 });
+  // the summary now lives in the info panel, under the Historique tab
+  await a.getByTestId("info-toggle").click();
+  await a.getByTestId("info-tab-historique").click();
   await a.locator('[data-testid="results-panel"]').waitFor({ timeout: 10000 });
+  await a.getByTestId("info-close").click();
   log("OK: post-resolution feedback rendered (bounced arrow + summary panel)");
   await a.screenshot({ path: `${SHOTS}/h1-standoff.png`, fullPage: true });
 

@@ -10,7 +10,6 @@ import {
 } from "react";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import {
-  setDrawVote,
   submitAdjustments,
   submitOrders,
   submitRetreats,
@@ -42,17 +41,8 @@ import {
 } from "@/lib/types";
 import MapView from "./map-view";
 import ChatPanel from "./chat-panel";
-
-const SEASON_LABEL: Record<string, string> = {
-  spring: "Printemps",
-  autumn: "Automne",
-  winter: "Hiver",
-};
-const PHASE_TYPE_LABEL: Record<string, string> = {
-  movement: "Mouvements",
-  retreat: "Retraites",
-  adjustment: "Ajustements",
-};
+import InfoPanel from "./info-panel";
+import { PHASE_TYPE_LABEL, SEASON_LABEL } from "./labels";
 
 function dbOrderToLocal(o: Order): LocalOrder {
   if (o.order_type === "move") {
@@ -548,18 +538,6 @@ export default function GameBoard({
     });
   };
 
-  // ----------------------------------------------------------- mutual draw
-  const activePlayers = players.filter((p) => p.nation && !p.is_eliminated);
-  // bots always consent — the decision rests with the human players
-  const drawVoteCount = activePlayers.filter((p) => p.is_bot || p.draw_vote).length;
-  const handleDrawVote = () => {
-    setError(null);
-    startTransition(async () => {
-      const result = await setDrawVote(roomId, !me.draw_vote);
-      if (result.error) setError(result.error);
-    });
-  };
-
   // ------------------------------------------------------------------ HUD
   const ranked = [...players]
     .filter((p) => p.nation)
@@ -593,7 +571,9 @@ export default function GameBoard({
     showResults && lastResolved?.summary ? lastResolved.summary.orders : [];
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[300px_1fr]">
+    // break out of the page's max-w-5xl so the map can use the full viewport,
+    // while keeping ~20px of breathing room at each edge
+    <div className="grid gap-5 lg:mx-[calc(50%-50vw+1.25rem)] lg:grid-cols-[300px_minmax(0,1fr)]">
       {/* ----------------------------------------------- end of game */}
       {isFinished && (
         <div
@@ -686,74 +666,6 @@ export default function GameBoard({
             ⏱ {mmss}
           </p>
         </div>
-
-        <div className="glass p-4">
-          <h2 className="mb-2 font-semibold text-stone-300">Classement</h2>
-          <ul className="space-y-1.5">
-            {ranked.map((p) => {
-              const sc = supplyCenterCount(territories, p.nation!);
-              const submitted = submittedPlayerIds.has(p.id);
-              return (
-                <li
-                  key={p.id}
-                  data-player={p.display_name}
-                  data-submitted={submitted}
-                  className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm ${
-                    p.id === me.id ? "bg-stone-800/70" : ""
-                  }`}
-                >
-                  <span
-                    className="h-3 w-3 shrink-0 rounded-full"
-                    style={{ backgroundColor: NATION_COLORS[p.nation!] }}
-                  />
-                  <span className="min-w-0 truncate">
-                    {p.display_name}
-                    <span className="text-stone-500"> · {p.nation}</span>
-                  </span>
-                  <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                    <span className="font-mono" data-sc-count={sc} title="Centres de ravitaillement">
-                      ★{sc}
-                    </span>
-                    {p.is_eliminated ? (
-                      <span title="Éliminé — spectateur">💀</span>
-                    ) : p.is_bot ? (
-                      <span title="Bot">🤖</span>
-                    ) : submitted ? (
-                      <span className="text-green-500" title="Ordres validés">✓</span>
-                    ) : (
-                      <span className="text-stone-500" title="En réflexion">⏳</span>
-                    )}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-
-        {/* ------------------------------------------- last phase results */}
-        {lastResolved?.summary && !isFinished && (
-          <div className="glass p-4" data-testid="results-panel">
-            <button
-              onClick={() => setShowResults((v) => !v)}
-              className="flex w-full items-center justify-between font-semibold text-stone-300"
-            >
-              <span>
-                Résultats — {SEASON_LABEL[lastResolved.season]} {lastResolved.year}{" "}
-                <span className="text-stone-500">({PHASE_TYPE_LABEL[lastResolved.type]})</span>
-              </span>
-              <span className="text-stone-500">{showResults ? "▾" : "▸"}</span>
-            </button>
-            {showResults && (
-              <ul className="mt-2 max-h-44 space-y-1 overflow-y-auto text-xs text-stone-400">
-                {lastResolved.summary.events.map((e, i) => (
-                  <li key={i} data-result-event>
-                    {e}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
 
         {/* ---------------------------------------------- order panel */}
         {isFinished ? null : isSpectator ? (
@@ -1121,31 +1033,6 @@ export default function GameBoard({
             )}
           </div>
         )}
-
-        {/* -------------------------------------------------- mutual draw */}
-        {!isFinished && !isSpectator && (
-          <div className="glass p-4" data-testid="draw-panel">
-            <h2 className="mb-1 font-semibold text-stone-300">Égalité mutuelle</h2>
-            <p className="text-xs text-stone-400">
-              La partie se termine en égalité partagée si toutes les puissances
-              encore en lice acceptent ({drawVoteCount}/{activePlayers.length}{" "}
-              acceptation{drawVoteCount > 1 ? "s" : ""}).
-            </p>
-            <button
-              onClick={handleDrawVote}
-              disabled={isPending}
-              data-testid="draw-vote"
-              data-my-vote={me.draw_vote ? "yes" : "no"}
-              className={`mt-2 w-full rounded-lg py-2 text-sm font-semibold transition disabled:opacity-50 ${
-                me.draw_vote
-                  ? "bg-stone-700 text-stone-200 hover:bg-stone-600"
-                  : "border border-amber-600/50 bg-amber-950/40 text-amber-400 hover:bg-amber-900/40"
-              }`}
-            >
-              {me.draw_vote ? "Retirer mon acceptation" : "Proposer / accepter l'égalité"}
-            </button>
-          </div>
-        )}
       </aside>
 
       {/* ----------------------------------------------------------- map */}
@@ -1163,6 +1050,20 @@ export default function GameBoard({
           onUnitClick={handleUnitClick}
         />
       </div>
+
+      {/* leaderboard, history and draw proposal live in the slide-over panel */}
+      <InfoPanel
+        roomId={roomId}
+        me={me}
+        players={players}
+        territories={territories}
+        submittedPlayerIds={submittedPlayerIds}
+        lastResolved={lastResolved}
+        isFinished={isFinished}
+        isSpectator={isSpectator}
+        showResults={showResults}
+        onToggleResults={() => setShowResults((v) => !v)}
+      />
 
       <ChatPanel roomId={roomId} me={me} players={players} />
     </div>
